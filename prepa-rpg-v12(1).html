@@ -1,0 +1,2082 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+<title>PRÉPA RPG ⚔️</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body{margin:0;background:#0f1629;overflow-x:hidden;font-family:sans-serif}
+  #root{min-height:100vh}
+  *{box-sizing:border-box}
+</style>
+</head>
+<body><div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback} = React;
+
+// ══════════════════════════════════════════════════════════════════
+// ⚙️  CONFIGURATION SUPABASE  — À MODIFIER AVANT DE METTRE EN LIGNE
+// ══════════════════════════════════════════════════════════════════
+// 1. Va sur https://supabase.com → crée un compte gratuit
+// 2. Crée un nouveau projet
+// 3. Dans Settings → API, copie "Project URL" et "anon public" key
+// 4. Colle-les ici :
+const SUPABASE_URL      = "https://eqfxwvtcotatwifpvxlm.supabase.co";          // ex: https://abcdef.supabase.co
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVxZnh3dnRjb3RhdHdpZnB2eGxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1ODM2NjYsImV4cCI6MjA4OTE1OTY2Nn0.pfArBpsSBXpFfDItl2NdJxB3UMRytn2T5sDrtQY5tA8";      // ey...longue clé...
+
+// 5. Dans Supabase → SQL Editor, exécute ce SQL :
+/*
+create table if not exists game_saves (
+  id         uuid        default gen_random_uuid() primary key,
+  user_id    uuid        references auth.users(id) on delete cascade not null unique,
+  data       jsonb       not null default '{}',
+  updated_at timestamptz default now()
+);
+alter table game_saves enable row level security;
+create policy "Own save" on game_saves for all using (auth.uid() = user_id);
+*/
+
+// 6. Dans Supabase → Authentication → Settings → désactive "Confirm email"
+//    (pour pouvoir se connecter sans vérifier son email pendant les tests)
+// ══════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+// 🗓️  GOOGLE CALENDAR — Système ICS (aucune config requise !)
+// Chaque utilisateur colle son lien ICS depuis Google Calendar.
+// Aucun Client ID, aucune validation Google, aucune restriction.
+// ══════════════════════════════════════════════════════════════════
+
+const IS_CONFIGURED = !SUPABASE_URL.includes("REMPLACE") && !SUPABASE_ANON_KEY.includes("REMPLACE");
+let sb = null;
+if (IS_CONFIGURED && window.supabase) {
+  try { sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); } catch(e){}
+}
+
+// ══════════════════════════════════════════════════════════════════
+// GAME DATA
+// ══════════════════════════════════════════════════════════════════
+const DUNGEONS={
+  "Maths":   {color:"#ff6b8a",glow:"rgba(255,107,138,.3)",boss:{name:"LE DÉRIVON",      icon:"🐉",flavor:"Maître des fonctions perdues"},  chapters:["Fonctions & Limites","Dérivation","Intégration","Suites numériques","Algèbre linéaire","Équations diff.","Complexes","Probabilités"]},
+  "Physique":{color:"#60b8ff",glow:"rgba(96,184,255,.3)", boss:{name:"L'ÉLECTRON NOIR", icon:"🌀",flavor:"Seigneur des forces cachées"},   chapters:["Mécanique","Oscillateurs","Électrocinétique","Optique","Thermodynamique","Ondes mécaniques"]},
+  "SI":      {color:"#4dffc3",glow:"rgba(77,255,195,.3)", boss:{name:"L'AUTOMATE",      icon:"🤖",flavor:"Gardien des systèmes complexes"},chapters:["Modélisation","Cinématique","Dynamique","SLCI","Résistance matériaux"]},
+  "Chimie":  {color:"#ffb347",glow:"rgba(255,179,71,.3)", boss:{name:"ACIDE CORRUPTOR", icon:"☠️",flavor:"Dissolveur de certitudes"},      chapters:["Solutions","Oxydoréduction","Cinétique","Thermochimie"]},
+  "Info":    {color:"#c084fc",glow:"rgba(192,132,252,.3)",boss:{name:"LE BUG PRIMORDIAL",icon:"👾",flavor:"L'erreur qui se propage"},       chapters:["Algorithmes","Python","Récursivité","Tri & Complexité"]},
+};
+const DURS=[30,60,120,180,240],XPMAP={30:40,60:90,120:200,180:320,240:450};
+const DUR_LABEL={30:"30 MIN",60:"1H",120:"2H",180:"3H",240:"4H"};
+const RAID_MSGS=[
+  "📖 Tu t'installes et ouvres tes cours...",
+  "✏️ Premier exercice en route...",
+  "🧠 La concentration monte doucement...",
+  "⚡ Tu rentres dans le sujet !",
+  "🔥 Focus total — plus rien n'existe !",
+  "💡 Les connexions se font d'elles-mêmes !",
+  "🌊 Tu es dans le flow, continue !",
+  "🎯 Chaque minute compte — courage !",
+  "⚔️ Tu repousses tes limites !",
+  "🏆 La fin approche — tiens bon !",
+  "✨ Dernière ligne droite, pousse !",
+];
+const TITLES=["Recrue","Initié","Apprenti","Cadet","Aspirant","Érudit","Savant","Expert","Maître","Grand Maître","Archimage","LÉGENDE PTSI"];
+const XPpLV=250;
+const getLv=xp=>Math.floor(xp/XPpLV)+1,getXPin=xp=>xp%XPpLV,getPct=xp=>(getXPin(xp)/XPpLV)*100;
+const getT=lv=>TITLES[Math.min(lv-1,TITLES.length-1)],p2=n=>String(n).padStart(2,"0");
+const mkC=()=>{const c={};Object.entries(DUNGEONS).forEach(([k,v])=>{c[k]=v.chapters.map(n=>({name:n,s:0}));});return c;};
+const rnd6=()=>Math.random().toString(36).substring(2,8).toUpperCase();
+function sg(k,d){try{const r=localStorage.getItem(k);return r?JSON.parse(r):d;}catch{return d;}}
+function ss(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+
+const OUTFITS={
+  ot1:{top:"#4a6ee8",btm:"#2a2d6a",slv:"#3a5ed8",shoe:"#202030",belt:"#151530",inner:"#f0f0f8",cape:null},
+  ot2:{top:"#525270",btm:"#363655",slv:"#444465",shoe:"#282830",belt:null,inner:null,cape:null},
+  ot3:{top:"#d44868",btm:"#d44868",slv:"#c43858",shoe:"#402010",belt:"#c8a030",inner:"#ffe8b0",cape:null},
+  ot4:{top:"#1e2e4e",btm:"#1e2e4e",slv:"#182844",shoe:"#100810",belt:"#100810",inner:"#e8eaf0",cape:null},
+  ot5:{top:"#101018",btm:"#101018",slv:"#0c0c14",shoe:"#080810",belt:null,inner:"#202030",cape:null},
+  ot6:{top:"#541290",btm:"#440e78",slv:"#4a1080",shoe:"#200840",belt:"#c09030",inner:"#c09030",cape:"#3a0870"},
+  ot7:{top:"#c8d0e0",btm:"#b8c0d0",slv:"#c0c8d8",shoe:"#808090",belt:"#606878",inner:"#8898a8",cape:null},
+  ot8:{top:"#c01828",btm:"#18188a",slv:"#a81020",shoe:"#080818",belt:"#ffd700",inner:"#ffd700",cape:"#e8c000"},
+  ot9:{top:"#8a5010",btm:"#6a3808",slv:"#7a4610",shoe:"#3a1c04",belt:"#ffd700",inner:"#ffd700",cape:null},
+  ot10:{top:"#5a6878",btm:"#4a5868",slv:"#526070",shoe:"#303840",belt:"#70808c",inner:"#90a8b8",cape:null},
+  ot11:{top:"#100810",btm:"#100810",slv:"#0c0810",shoe:"#080408",belt:null,inner:"#e0e0e8",cape:"#180a18"},
+  ot12:{top:"#286828",btm:"#185818",slv:"#206020",shoe:"#402808",belt:"#604010",inner:"#90c050",cape:null},
+  ot13:{top:"#7a4818",btm:"#5a3010",slv:"#6a4010",shoe:"#402010",belt:"#c89030",inner:"#c89030",cape:null},
+  ot14:{top:"#303030",btm:"#202020",slv:"#282828",shoe:"#101010",belt:null,inner:"#888888",cape:null},
+};
+const ACAT={
+  skin:[{id:"sk1",label:"Porcelaine",color:"#ffd5b0",cost:0},{id:"sk2",label:"Clair",color:"#f0b078",cost:0},{id:"sk3",label:"Doré",color:"#d88848",cost:0},{id:"sk4",label:"Brun",color:"#b06028",cost:0},{id:"sk5",label:"Foncé",color:"#804018",cost:0},{id:"sk6",label:"Ébène",color:"#50200a",cost:0}],
+  hairStyle:[{id:"hs0",label:"Chauve",cost:0},{id:"hs1",label:"Courts",cost:0},{id:"hs2",label:"Mi-longs",cost:0},{id:"hs3",label:"Longs",cost:50},{id:"hs4",label:"Bouclés",cost:60},{id:"hs5",label:"Afro",cost:80},{id:"hs6",label:"Mohawk",cost:100},{id:"hs7",label:"Tresses",cost:80},{id:"hs8",label:"Queue cheval",cost:60},{id:"hs9",label:"Chignon",cost:60}],
+  hairColor:[{id:"hc1",label:"Noir",color:"#141010",cost:0},{id:"hc2",label:"Brun",color:"#5a3010",cost:0},{id:"hc3",label:"Châtain",color:"#8a5428",cost:0},{id:"hc4",label:"Blond",color:"#d4a820",cost:30},{id:"hc5",label:"Roux",color:"#c04010",cost:40},{id:"hc6",label:"Blanc",color:"#dcd8d0",cost:50},{id:"hc7",label:"Bleu",color:"#1844c8",cost:70},{id:"hc8",label:"Rose",color:"#d840a8",cost:70},{id:"hc9",label:"Vert",color:"#208848",cost:70},{id:"hc10",label:"Violet",color:"#7020c0",cost:70},{id:"hc11",label:"Rouge",color:"#cc1010",cost:60},{id:"hc12",label:"Doré",color:"#c89000",cost:100}],
+  eyes:[{id:"ec1",label:"Noir",color:"#1a0a08",cost:0},{id:"ec2",label:"Marron",color:"#6a3010",cost:0},{id:"ec3",label:"Bleu",color:"#0858c8",cost:30},{id:"ec4",label:"Vert",color:"#108048",cost:30},{id:"ec5",label:"Violet",color:"#6010a0",cost:50},{id:"ec6",label:"Or",color:"#b88000",cost:80},{id:"ec7",label:"Rouge",color:"#cc1010",cost:80},{id:"ec8",label:"Cyan",color:"#00a0c8",cost:60}],
+  mouth:[{id:"mc1",label:"Sourire",cost:0},{id:"mc2",label:"Grand",cost:0},{id:"mc3",label:"Discret",cost:20},{id:"mc4",label:"Déterminé",cost:20},{id:"mc5",label:"Mignon",cost:30}],
+  outfit:[{id:"ot1",label:"Lycéen",emoji:"🎓",cost:0},{id:"ot2",label:"Hoodie",emoji:"🧥",cost:80},{id:"ot3",label:"Kimono",emoji:"🥋",cost:100},{id:"ot4",label:"Costume",emoji:"👔",cost:120},{id:"ot5",label:"Ninja",emoji:"🥷",cost:150},{id:"ot6",label:"Mage",emoji:"🧙",cost:180},{id:"ot7",label:"Astronaute",emoji:"🚀",cost:220},{id:"ot8",label:"Héros",emoji:"🦸",cost:180},{id:"ot9",label:"Prince",emoji:"🤴",cost:200},{id:"ot10",label:"Robot",emoji:"🤖",cost:250},{id:"ot11",label:"Vampire",emoji:"🧛",cost:200},{id:"ot12",label:"Elfe",emoji:"🧝",cost:160},{id:"ot13",label:"Cowboy",emoji:"🤠",cost:130},{id:"ot14",label:"Détective",emoji:"🕵",cost:170}],
+  hat:[{id:"ht0",label:"Aucun",emoji:null,cost:0},{id:"ht1",label:"Casquette",emoji:"🧢",cost:60},{id:"ht2",label:"Couronne",emoji:"👑",cost:200},{id:"ht3",label:"Chapeau",emoji:"🎩",cost:100},{id:"ht4",label:"Casque",emoji:"⛑",cost:120},{id:"ht5",label:"Bob",emoji:"👒",cost:70},{id:"ht6",label:"Halo",emoji:"😇",cost:150},{id:"ht7",label:"Diable",emoji:"😈",cost:150},{id:"ht8",label:"Ninja",emoji:"🎌",cost:80},{id:"ht9",label:"Wizard",emoji:"🔮",cost:120}],
+  glasses:[{id:"gl0",label:"Aucunes",emoji:null,cost:0},{id:"gl1",label:"Rondes",emoji:"👓",cost:60},{id:"gl2",label:"Soleil",emoji:"🕶",cost:80},{id:"gl3",label:"Sécurité",emoji:"🥽",cost:100}],
+  accessory:[{id:"ac0",label:"Aucun",emoji:null,pos:"none",cost:0},{id:"ac1",label:"Épée",emoji:"⚔",pos:"right",cost:100},{id:"ac2",label:"Baguette",emoji:"🪄",pos:"right",cost:80},{id:"ac3",label:"Bouclier",emoji:"🛡",pos:"left",cost:120},{id:"ac4",label:"Livre",emoji:"📚",pos:"both",cost:50},{id:"ac5",label:"Café",emoji:"☕",pos:"right",cost:40},{id:"ac6",label:"Crayon",emoji:"✏",pos:"right",cost:30},{id:"ac7",label:"Gamepad",emoji:"🎮",pos:"both",cost:80},{id:"ac8",label:"Trophée",emoji:"🏆",pos:"raise",cost:200},{id:"ac9",label:"Arc",emoji:"🏹",pos:"left",cost:130}],
+  background:[{id:"bg1",label:"Océan",g:["#1a3a6a","#0a2040"],stars:false,cost:0},{id:"bg2",label:"Nuit",g:["#1a1040","#0a0828"],stars:false,cost:0},{id:"bg3",label:"Forêt",g:["#1a3a20","#0a2010"],stars:false,cost:0},{id:"bg4",label:"Coucher",g:["#6a2a10","#d44020"],stars:false,cost:50},{id:"bg5",label:"Galaxie",g:["#08082a","#18104a"],stars:true,cost:100},{id:"bg6",label:"Feu",g:["#4a0a00","#c83000"],stars:false,cost:80},{id:"bg7",label:"Glace",g:["#102a4a","#8ac0e0"],stars:false,cost:70},{id:"bg8",label:"Néon",g:["#050f12","#002a18"],stars:false,cost:100},{id:"bg9",label:"Or",g:["#3a2800","#c09008"],stars:false,cost:120},{id:"bg10",label:"Sakura",g:["#3a1030","#c870a8"],stars:false,cost:80},{id:"bg11",label:"Désert",g:["#4a3010","#c8a040"],stars:false,cost:70},{id:"bg12",label:"Tonnerre",g:["#0a1428","#1a3878"],stars:false,cost:90}],
+  frame:[{id:"fr1",label:"Simple",color:"#2d3d6a",glow:null,cost:0},{id:"fr2",label:"Doré",color:"#ffd700",glow:"#ffd700",cost:80},{id:"fr3",label:"Argenté",color:"#c0c8d8",glow:"#c0c8d8",cost:60},{id:"fr4",label:"Diamant",color:"#88ddff",glow:"#88ddff",cost:150},{id:"fr5",label:"Feu",color:"#ff5500",glow:"#ff5500",cost:120},{id:"fr6",label:"Magie",color:"#c080ff",glow:"#c080ff",cost:140},{id:"fr7",label:"Émeraude",color:"#40ff80",glow:"#40ff80",cost:100},{id:"fr8",label:"Sang",color:"#ff2020",glow:"#ff2020",cost:130},{id:"fr9",label:"Arc-en-ciel",color:"#ff8800",glow:"#ff8800",cost:180}],
+};
+const FREE_IDS=new Set(Object.values(ACAT).flat().filter(x=>x.cost===0).map(x=>x.id));
+const DAV={skin:"sk2",hairStyle:"hs1",hairColor:"hc1",eyes:"ec2",mouth:"mc1",outfit:"ot1",hat:"ht0",glasses:"gl0",accessory:"ac0",background:"bg1",frame:"fr1"};
+const REWARDS=[
+  {id:"r1",icon:"🎮",label:"30 min de jeu vidéo",desc:"Méritées, profite bien",cost:80,cat:"loisir"},
+  {id:"r2",icon:"🕹",label:"1h de jeu vidéo",desc:"Tu l'as vraiment gagné",cost:150,cat:"loisir"},
+  {id:"r3",icon:"📺",label:"1 épisode de série",desc:"Pose-toi, détends-toi",cost:100,cat:"loisir"},
+  {id:"r4",icon:"👥",label:"Soirée avec des amis",desc:"La culpabilité ? Plus là",cost:200,cat:"social"},
+  {id:"r5",icon:"⚽",label:"Séance de sport/hobby",desc:"Corps sain, esprit sain",cost:120,cat:"loisir"},
+  {id:"r6",icon:"🍕",label:"Repas plaisir",desc:"Tu choisis ce que tu veux",cost:160,cat:"bouffe"},
+  {id:"r7",icon:"😴",label:"Sieste sans culpabilité",desc:"20 min = recharge complète",cost:60,cat:"repos"},
+  {id:"r8",icon:"🎵",label:"1h de musique",desc:"Playlist full décompression",cost:40,cat:"loisir"},
+  {id:"r9",icon:"🌴",label:"Après-midi libre",desc:"Fais EXACTEMENT ce que tu veux",cost:350,cat:"special"},
+  {id:"r10",icon:"🎬",label:"Cinéma / film",desc:"Soirée ciné sans remords",cost:220,cat:"loisir"},
+  {id:"r11",icon:"✨",label:"Journée sans prépa",desc:"Pas de cours. Juste toi.",cost:500,cat:"special"},
+];
+const RCAT={loisir:{color:"#60b8ff"},social:{color:"#4dffc3"},bouffe:{color:"#ffb347"},repos:{color:"#c084fc"},special:{color:"#ffd700"}};
+
+// ══════════════════════════════════════════════════════════════════
+// CSS
+// ══════════════════════════════════════════════════════════════════
+const CSS=`
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;500;600;700&family=Exo+2:ital,wght@0,300;0,400;1,400&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  @keyframes spin      {to{transform:rotate(360deg)}}
+  @keyframes bossFloat {0%,100%{transform:translateY(0)}50%{transform:translateY(-14px)}}
+  @keyframes bossHit   {0%{transform:scale(1.3) rotate(8deg)}40%{transform:scale(.8) rotate(-6deg)}100%{transform:scale(1)}}
+  @keyframes bossDead  {0%{transform:scale(1)}30%{transform:scale(1.3) rotate(15deg)}70%{transform:scale(.5) rotate(-30deg)}100%{transform:scale(0);opacity:0}}
+  @keyframes fadeUp    {from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes fadeIn    {from{opacity:0}to{opacity:1}}
+  @keyframes fadeInS   {from{opacity:0;transform:scale(.75)}to{opacity:1;transform:scale(1)}}
+  @keyframes dmgFloat  {0%{opacity:1;transform:translateY(0) scale(1.4)}80%{opacity:.4}100%{opacity:0;transform:translateY(-80px) scale(.7)}}
+  @keyframes ntfAnim   {0%{opacity:0;transform:translateY(-12px)}12%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0}}
+  @keyframes lvlRay    {from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+  @keyframes heroGlow  {0%,100%{text-shadow:0 0 14px #ffd70055}50%{text-shadow:0 0 36px #ffd700,0 0 70px #ffd70044}}
+  @keyframes screenFlash{0%{opacity:.25}100%{opacity:0}}
+  @keyframes atkPulse  {0%,100%{transform:scale(1)}50%{transform:scale(1.014)}}
+  @keyframes idle      {0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  @keyframes victBounce{0%{transform:scale(0) rotate(-20deg)}60%{transform:scale(1.2) rotate(5deg)}80%{transform:scale(.95)}100%{transform:scale(1)}}
+  @keyframes popIn     {0%{transform:scale(.85);opacity:0}100%{transform:scale(1);opacity:1}}
+  @keyframes charFloat {0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+  @keyframes cloudPulse{0%,100%{opacity:.7}50%{opacity:1}}
+  @keyframes authBg    {0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+  @keyframes bellRing  {0%,100%{transform:rotate(0)}20%{transform:rotate(-20deg)}40%{transform:rotate(20deg)}60%{transform:rotate(-12deg)}80%{transform:rotate(8deg)}}
+  ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#1a2040}::-webkit-scrollbar-thumb{background:#2a3560;border-radius:4px}
+  .btn{transition:transform .1s,filter .1s;cursor:pointer;border:none;outline:none;font-family:inherit}.btn:hover{filter:brightness(1.12);transform:translateY(-1px)}.btn:active{transform:scale(.91)!important}
+  .dcard{cursor:pointer;border:none;outline:none;font-family:inherit;transition:all .2s}.dcard:hover{transform:translateY(-3px) scale(1.018)!important}.dcard:active{transform:scale(.96)!important}
+  .crow{transition:transform .12s,filter .12s;cursor:pointer}.crow:hover{transform:translateX(5px);filter:brightness(1.2)}.crow:active{transform:scale(.97)}
+  .avitem{transition:all .15s;cursor:pointer;border:none;outline:none}.avitem:hover{transform:scale(1.06);filter:brightness(1.15)}.avitem:active{transform:scale(.94)}
+  .nb{cursor:pointer;border:none;outline:none;background:none;font-family:inherit;transition:all .15s}
+  .schedCell{transition:background .1s;cursor:pointer}.schedCell:hover{background:rgba(96,184,255,.07)!important}
+  .authInput{transition:border .2s,box-shadow .2s}.authInput:focus{border-color:#ffd700!important;box-shadow:0 0 0 3px rgba(255,215,0,.12)!important}
+  input,textarea{font-family:'Rajdhani',sans-serif}
+  input::placeholder,textarea::placeholder{color:#4a5580}
+`;
+
+// ══════════════════════════════════════════════════════════════════
+// SETUP GUIDE MODAL (shown when Supabase not configured)
+// ══════════════════════════════════════════════════════════════════
+function SetupGuide({onOffline}) {
+  const BG="#0f1629",CARD="#1a2340",CARD2="#212b4a",BORDER="#2d3d6a",TEXT="#d0d8f0",TEXT2="#8090b8",GOLD="#ffd700";
+  const [copied,setCopied]=useState(false);
+  const SQL=`create table if not exists game_saves (\n  id         uuid        default gen_random_uuid() primary key,\n  user_id    uuid        references auth.users(id) on delete cascade not null unique,\n  data       jsonb       not null default '{}',\n  updated_at timestamptz default now()\n);\nalter table game_saves enable row level security;\ncreate policy "Own save" on game_saves for all using (auth.uid() = user_id);`;
+  const copy=()=>{navigator.clipboard.writeText(SQL);setCopied(true);setTimeout(()=>setCopied(false),2000);};
+  return(
+    <div style={{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",padding:"20px",fontFamily:"'Rajdhani',sans-serif"}}>
+      <style>{CSS}</style>
+      <div style={{maxWidth:"500px",width:"100%",animation:"fadeUp .4s ease"}}>
+        <div style={{textAlign:"center",marginBottom:"28px"}}>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"2rem",fontWeight:900,color:GOLD,textShadow:`0 0 40px ${GOLD}55`,marginBottom:"8px"}}>⚔️ PRÉPA RPG</div>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".68rem",color:TEXT2,letterSpacing:".25em"}}>CONFIGURATION REQUISE</div>
+        </div>
+        <div style={{background:CARD,border:`2px solid ${GOLD}44`,borderRadius:"18px",padding:"24px",marginBottom:"14px"}}>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",color:GOLD,letterSpacing:".18em",marginBottom:"16px"}}>📋 ÉTAPES POUR METTRE EN LIGNE</div>
+          {[
+            {n:1,t:"Crée un compte Supabase (gratuit)",d:"supabase.com → New project"},
+            {n:2,t:"Copie l'URL et la clé anon",d:"Settings → API → Project URL + anon key"},
+            {n:3,t:"Colle-les dans ce fichier HTML",d:"Lignes SUPABASE_URL et SUPABASE_ANON_KEY"},
+            {n:4,t:"Exécute le SQL ci-dessous",d:"Supabase → SQL Editor → New query"},
+            {n:5,t:"Désactive la vérif email",d:"Authentication → Settings → Confirm email: OFF"},
+            {n:6,t:"Dépose sur Netlify Drop",d:"netlify.com/drop → glisse-dépose le fichier"},
+          ].map(s=>(
+            <div key={s.n} style={{display:"flex",gap:"12px",padding:"10px 0",borderBottom:`1px solid ${BORDER}`,alignItems:"flex-start"}}>
+              <div style={{width:"26px",height:"26px",borderRadius:"50%",background:`${GOLD}22`,border:`2px solid ${GOLD}66`,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Orbitron',sans-serif",fontSize:".68rem",fontWeight:900,color:GOLD,flexShrink:0}}>{s.n}</div>
+              <div>
+                <div style={{fontSize:".92rem",color:TEXT,fontWeight:600}}>{s.t}</div>
+                <div style={{fontSize:".76rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",marginTop:"2px"}}>{s.d}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{background:CARD,border:`1px solid #4dffc344`,borderRadius:"14px",padding:"16px",marginBottom:"14px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
+            <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:"#4dffc3",letterSpacing:".16em"}}>SQL À EXÉCUTER</div>
+            <button className="btn" onClick={copy} style={{padding:"5px 12px",background:copied?"#1a3a20":"transparent",border:`1px solid ${copied?"#4dffc3":"#4dffc344"}`,borderRadius:"8px",color:"#4dffc3",fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",cursor:"pointer",fontWeight:700,transition:"all .2s"}}>
+              {copied?"✅ COPIÉ":"📋 COPIER"}
+            </button>
+          </div>
+          <pre style={{fontSize:".68rem",color:"#8090b8",fontFamily:"monospace",lineHeight:1.7,overflowX:"auto",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{SQL}</pre>
+        </div>
+        <button className="btn" onClick={onOffline} style={{width:"100%",padding:"15px",background:`linear-gradient(145deg,${CARD2},${CARD})`,border:`1px solid ${BORDER}`,borderRadius:"13px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".75rem",fontWeight:700,cursor:"pointer",letterSpacing:".12em"}}>
+          JOUER HORS LIGNE SANS COMPTE →
+        </button>
+        <div style={{textAlign:"center",marginTop:"10px",fontSize:".7rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic"}}>Tes données seront sauvegardées localement dans ce navigateur</div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// AUTH SCREEN
+// ══════════════════════════════════════════════════════════════════
+function AuthScreen({onOffline}) {
+  const BG="#0f1629",CARD="#1a2340",CARD2="#212b4a",BORDER="#2d3d6a",TEXT="#d0d8f0",TEXT2="#8090b8",GOLD="#ffd700";
+  const [mode,setMode]=useState("login");
+  const [email,setEmail]=useState("");
+  const [password,setPwd]=useState("");
+  const [confirm,setConfirm]=useState("");
+  const [pseudo,setPseudo]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const [success,setSuccess]=useState("");
+
+  const submit=async()=>{
+    setError("");setSuccess("");setLoading(true);
+    try{
+      if(mode==="login"){
+        const {error:e}=await sb.auth.signInWithPassword({email:email.trim(),password});
+        if(e)throw new Error(translateError(e.message));
+      } else {
+        if(!pseudo.trim())throw new Error("Choisis un pseudo");
+        if(password.length<6)throw new Error("Mot de passe trop court (6 caractères minimum)");
+        if(password!==confirm)throw new Error("Les mots de passe ne correspondent pas");
+        const {error:e}=await sb.auth.signUp({email:email.trim(),password,options:{data:{pseudo:pseudo.trim()}}});
+        if(e)throw new Error(translateError(e.message));
+        setSuccess("✅ Compte créé ! Connecte-toi maintenant.");
+        setMode("login");setPwd("");setConfirm("");setPseudo("");
+      }
+    }catch(e){setError(e.message);}
+    setLoading(false);
+  };
+
+  const translateError=msg=>{
+    if(msg.includes("Invalid login"))return "Email ou mot de passe incorrect";
+    if(msg.includes("already registered"))return "Cet email est déjà utilisé";
+    if(msg.includes("valid email"))return "Adresse email invalide";
+    if(msg.includes("Network"))return "Problème de connexion";
+    return msg;
+  };
+
+  const handleKey=e=>{if(e.key==="Enter")submit();};
+
+  return(
+    <div style={{minHeight:"100vh",background:`radial-gradient(ellipse at 30% 20%,rgba(255,107,138,.08),transparent 50%),radial-gradient(ellipse at 70% 80%,rgba(96,184,255,.08),transparent 50%),${BG}`,display:"flex",alignItems:"center",justifyContent:"center",padding:"20px",fontFamily:"'Rajdhani',sans-serif",position:"relative",overflow:"hidden"}}>
+      <style>{CSS}</style>
+      {/* Stars */}
+      {[...Array(20)].map((_,i)=><div key={i} style={{position:"absolute",width:i%3===0?2:1,height:i%3===0?2:1,borderRadius:"50%",background:"white",top:`${(i*17+7)%90+5}%`,left:`${(i*23+11)%90+5}%`,opacity:.4+((i*.07)%0.4)}}/>)}
+
+      <div style={{maxWidth:"420px",width:"100%",animation:"fadeUp .4s ease",position:"relative",zIndex:1}}>
+        {/* Logo */}
+        <div style={{textAlign:"center",marginBottom:"32px"}}>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(1.8rem,8vw,2.4rem)",fontWeight:900,color:GOLD,textShadow:`0 0 50px ${GOLD}55,0 0 100px ${GOLD}22`,letterSpacing:".1em",marginBottom:"6px"}}>⚔️ PRÉPA RPG</div>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:TEXT2,letterSpacing:".28em"}}>TON JEU. TES RÈGLES. TA PRÉPA.</div>
+        </div>
+
+        {/* Card */}
+        <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"20px",padding:"28px 24px",boxShadow:"0 24px 80px rgba(0,0,0,.6)"}}>
+          {/* Mode tabs */}
+          <div style={{display:"flex",gap:"6px",marginBottom:"24px",background:CARD2,padding:"5px",borderRadius:"12px"}}>
+            {[{id:"login",l:"Se connecter"},{id:"signup",l:"Créer un compte"}].map(t=>(
+              <button key={t.id} className="btn" onClick={()=>{setMode(t.id);setError("");setSuccess("");}} style={{flex:1,padding:"10px",borderRadius:"9px",border:"none",background:mode===t.id?`linear-gradient(145deg,#2a3a60,#3a4a80)`:"transparent",color:mode===t.id?GOLD:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",fontWeight:700,cursor:"pointer",letterSpacing:".08em",transition:"all .2s"}}>
+                {t.l}
+              </button>
+            ))}
+          </div>
+
+          {/* Fields */}
+          <div style={{display:"flex",flexDirection:"column",gap:"12px"}}>
+            {mode==="signup"&&(
+              <div>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:TEXT2,letterSpacing:".12em",marginBottom:"6px"}}>PSEUDO</div>
+                <input value={pseudo} onChange={e=>setPseudo(e.target.value)} onKeyDown={handleKey} placeholder="Ton pseudo en jeu..." className="authInput" style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"10px",padding:"13px 15px",color:TEXT,fontSize:"1rem",outline:"none"}}/>
+              </div>
+            )}
+            <div>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:TEXT2,letterSpacing:".12em",marginBottom:"6px"}}>EMAIL</div>
+              <input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={handleKey} type="email" placeholder="ton@email.com" className="authInput" style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"10px",padding:"13px 15px",color:TEXT,fontSize:"1rem",outline:"none"}}/>
+            </div>
+            <div>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:TEXT2,letterSpacing:".12em",marginBottom:"6px"}}>MOT DE PASSE</div>
+              <input value={password} onChange={e=>setPwd(e.target.value)} onKeyDown={handleKey} type="password" placeholder={mode==="signup"?"6 caractères minimum...":"••••••••"} className="authInput" style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"10px",padding:"13px 15px",color:TEXT,fontSize:"1rem",outline:"none"}}/>
+            </div>
+            {mode==="signup"&&(
+              <div>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:TEXT2,letterSpacing:".12em",marginBottom:"6px"}}>CONFIRMER</div>
+                <input value={confirm} onChange={e=>setConfirm(e.target.value)} onKeyDown={handleKey} type="password" placeholder="Retape le mot de passe..." className="authInput" style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"10px",padding:"13px 15px",color:TEXT,fontSize:"1rem",outline:"none"}}/>
+              </div>
+            )}
+          </div>
+
+          {/* Error / Success */}
+          {error&&<div style={{marginTop:"14px",padding:"11px 14px",background:"rgba(255,107,138,.12)",border:"1px solid #ff6b8a44",borderRadius:"10px",fontSize:".84rem",color:"#ff6b8a",fontFamily:"'Exo 2',sans-serif"}}>{error}</div>}
+          {success&&<div style={{marginTop:"14px",padding:"11px 14px",background:"rgba(77,255,195,.12)",border:"1px solid #4dffc344",borderRadius:"10px",fontSize:".84rem",color:"#4dffc3",fontFamily:"'Exo 2',sans-serif"}}>{success}</div>}
+
+          {/* Submit */}
+          <button className="btn" onClick={submit} disabled={loading} style={{width:"100%",marginTop:"20px",padding:"16px",background:loading?CARD2:`linear-gradient(145deg,#2a2010,#3a3018)`,border:`2px solid ${loading?BORDER:GOLD}`,borderRadius:"13px",color:loading?TEXT2:GOLD,fontFamily:"'Orbitron',sans-serif",fontSize:".82rem",fontWeight:900,cursor:loading?"not-allowed":"pointer",letterSpacing:".2em",transition:"all .2s",boxShadow:loading?"none":`0 0 30px ${GOLD}22`}}>
+            {loading?(
+              <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"10px"}}>
+                <span style={{width:"16px",height:"16px",border:"2px solid #ffffff22",borderTopColor:GOLD,borderRadius:"50%",display:"inline-block",animation:"spin .7s linear infinite"}}/>
+                CHARGEMENT...
+              </span>
+            ):mode==="login"?"⚔️ ENTRER DANS L'ARÈNE":"✨ CRÉER MON HÉROS"}
+          </button>
+
+          {/* Offline */}
+          <button className="btn" onClick={onOffline} style={{width:"100%",marginTop:"10px",padding:"12px",background:"transparent",border:`1px solid ${BORDER}`,borderRadius:"11px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".64rem",fontWeight:600,cursor:"pointer",letterSpacing:".1em"}}>
+            JOUER HORS LIGNE SANS COMPTE
+          </button>
+        </div>
+
+        <div style={{textAlign:"center",marginTop:"16px",fontSize:".68rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic",opacity:.6}}>
+          Tes données cloud sont chiffrées et sécurisées via Supabase
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// SVG CHARACTER
+// ══════════════════════════════════════════════════════════════════
+function CharBody({av,lv,name,size=180,animate=false}){
+  const g=(cat,id)=>ACAT[cat]?.find(x=>x.id===id)||ACAT[cat][0];
+  const sk=g("skin",av.skin||"sk2").color,hs=g("hairStyle",av.hairStyle||"hs1").id,hc=g("hairColor",av.hairColor||"hc1").color;
+  const ec=g("eyes",av.eyes||"ec2").color,mo=g("mouth",av.mouth||"mc1").id,ot=g("outfit",av.outfit||"ot1");
+  const ht=g("hat",av.hat||"ht0"),gl=g("glasses",av.glasses||"gl0"),ac=g("accessory",av.accessory||"ac0");
+  const bg=g("background",av.background||"bg1"),fr=g("frame",av.frame||"fr1");
+  const od=OUTFITS[ot.id]||OUTFITS["ot1"];
+  const accP={right:{x:142,y:182,s:28},left:{x:18,y:182,s:28},both:{x:80,y:196,s:32},raise:{x:142,y:148,s:30},none:{x:0,y:0,s:0}}[ac.pos]||{x:0,y:0,s:0};
+  const HX=80,HY=65,HR=35;
+  const hairEl=()=>{
+    const f={fill:hc};
+    if(hs==="hs0")return null;
+    if(hs==="hs1")return <ellipse cx={HX} cy={HY-22} rx={HR+2} ry={20} {...f}/>;
+    if(hs==="hs2")return <><ellipse cx={HX} cy={HY-22} rx={HR+3} ry={22} {...f}/><rect x={HX-HR-3} y={HY-14} width={9} height={40} rx={4} {...f}/><rect x={HX+HR-5} y={HY-14} width={9} height={40} rx={4} {...f}/></>;
+    if(hs==="hs3")return <><ellipse cx={HX} cy={HY-22} rx={HR+3} ry={22} {...f}/><rect x={HX-HR-3} y={HY-14} width={10} height={90} rx={5} {...f}/><rect x={HX+HR-6} y={HY-14} width={10} height={90} rx={5} {...f}/></>;
+    if(hs==="hs4")return <>{[[-26,-26],[-36,-12],[-32,6],[0,-38],[26,-26],[36,-12],[32,6]].map(([dx,dy],i)=><ellipse key={i} cx={HX+dx} cy={HY+dy} rx={13} ry={12} {...f}/>)}</>;
+    if(hs==="hs5")return <ellipse cx={HX} cy={HY-8} rx={HR+24} ry={HR+18} {...f}/>;
+    if(hs==="hs6")return <rect x={HX-7} y={HY-HR-30} width={14} height={34} rx={5} {...f}/>;
+    if(hs==="hs7")return <><ellipse cx={HX} cy={HY-22} rx={HR+2} ry={20} {...f}/><rect x={HX-20} y={HY+18} width={13} height={85} rx={6} {...f}/><rect x={HX+8} y={HY+18} width={13} height={85} rx={6} {...f}/></>;
+    if(hs==="hs8")return <><ellipse cx={HX} cy={HY-22} rx={HR+2} ry={19} {...f}/><rect x={HX+HR} y={HY-18} width={12} height={62} rx={5} {...f}/></>;
+    if(hs==="hs9")return <><ellipse cx={HX} cy={HY-22} rx={HR+1} ry={17} {...f}/><ellipse cx={HX+20} cy={HY-42} rx={14} ry={14} {...f}/></>;
+    return null;
+  };
+  const fringeEl=()=>{if(hs==="hs0"||hs==="hs3"||hs==="hs7")return null;return <path d={`M${HX-HR+4},${HY-HR+6} Q${HX},${HY-HR-8} ${HX+HR-4},${HY-HR+6}`} fill={hc}/>;};
+  const mouthEl=()=>{const mx=HX,my=HY+16;
+    if(mo==="mc1")return <path d={`M${mx-10},${my} Q${mx},${my+10} ${mx+10},${my}`} stroke="rgba(80,30,10,.6)" strokeWidth={2.5} fill="none" strokeLinecap="round"/>;
+    if(mo==="mc2")return <path d={`M${mx-14},${my} Q${mx},${my+15} ${mx+14},${my}`} stroke="rgba(80,30,10,.6)" strokeWidth={2.5} fill="none" strokeLinecap="round"/>;
+    if(mo==="mc3")return <path d={`M${mx-7},${my} Q${mx},${my+7} ${mx+7},${my}`} stroke="rgba(80,30,10,.6)" strokeWidth={2} fill="none" strokeLinecap="round"/>;
+    if(mo==="mc4")return <line x1={mx-10} y1={my} x2={mx+10} y2={my} stroke="rgba(80,30,10,.6)" strokeWidth={2.5} strokeLinecap="round"/>;
+    if(mo==="mc5")return <path d={`M${mx-9},${my} L${mx-4},${my+7} L${mx},${my+3} L${mx+4},${my+7} L${mx+9},${my}`} stroke="rgba(80,30,10,.6)" strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round"/>;
+    return null;};
+  const bgId=`bg_${av.background||"bg1"}_${size}`;
+  return(
+    <div style={{display:"inline-block",animation:animate?"charFloat 3s ease-in-out infinite":"none"}}>
+      <svg width={size} height={Math.round(size*1.82)} viewBox="0 0 160 292" xmlns="http://www.w3.org/2000/svg" style={{overflow:"visible"}}>
+        <defs>
+          <linearGradient id={bgId} x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor={bg.g[0]}/><stop offset="100%" stopColor={bg.g[1]}/></linearGradient>
+          <clipPath id={`clip_${size}`}><rect x="0" y="0" width="160" height="292" rx="14"/></clipPath>
+        </defs>
+        <g clipPath={`url(#clip_${size})`}>
+          <rect x="0" y="0" width="160" height="292" fill={`url(#${bgId})`}/>
+          {bg.stars&&[...Array(22)].map((_,i)=><circle key={i} cx={(i*37+11)%152+4} cy={(i*43+9)%276+4} r={i%4===0?1.6:0.8} fill="white" opacity={.6+((i*.11)%0.35)}/>)}
+          {od.cape&&<path d={`M${HX-18},${HY+HR-4} L40,205 L120,205 L${HX+18},${HY+HR-4}`} fill={od.cape} opacity={.9}/>}
+          <rect x={42} y={256} width={34} height={16} rx={8} fill={od.shoe}/><rect x={84} y={256} width={34} height={16} rx={8} fill={od.shoe}/>
+          <ellipse cx={59} cy={270} rx={22} ry={9} fill={od.shoe}/><ellipse cx={101} cy={270} rx={22} ry={9} fill={od.shoe}/>
+          <ellipse cx={54} cy={260} rx={12} ry={4} fill="rgba(255,255,255,.12)"/><ellipse cx={96} cy={260} rx={12} ry={4} fill="rgba(255,255,255,.12)"/>
+          <rect x={46} y={186} width={30} height={72} rx={7} fill={od.btm}/><rect x={84} y={186} width={30} height={72} rx={7} fill={od.btm}/>
+          <line x1={61} y1={196} x2={61} y2={252} stroke="rgba(0,0,0,.12)" strokeWidth={2}/><line x1={99} y1={196} x2={99} y2={252} stroke="rgba(0,0,0,.12)" strokeWidth={2}/>
+          {ot.id==="ot6"&&<path d={`M38,172 L28,272 L132,272 L122,172`} fill={od.top} opacity={.85}/>}
+          {od.belt&&<rect x={40} y={183} width={80} height={8} rx={3} fill={od.belt}/>}
+          <rect x={20} y={110} width={22} height={76} rx={10} fill={od.slv}/><rect x={20} y={110} width={6} height={76} rx={8} fill="rgba(0,0,0,.1)"/>
+          <ellipse cx={31} cy={191} rx={12} ry={11} fill={sk}/><ellipse cx={31} cy={188} rx={8} ry={6} fill={sk}/>
+          <rect x={118} y={110} width={22} height={76} rx={10} fill={od.slv}/><rect x={134} y={110} width={6} height={76} rx={8} fill="rgba(0,0,0,.1)"/>
+          <ellipse cx={129} cy={191} rx={12} ry={11} fill={sk}/><ellipse cx={129} cy={188} rx={8} ry={6} fill={sk}/>
+          <rect x={40} y={108} width={80} height={80} rx={9} fill={od.top}/>
+          <rect x={40} y={108} width={80} height={24} rx={9} fill="rgba(255,255,255,.08)"/>
+          <rect x={40} y={168} width={80} height={20} rx={9} fill="rgba(0,0,0,.12)"/>
+          {od.inner&&<polygon points={`${HX},108 ${HX-12},136 ${HX},126 ${HX+12},136`} fill={od.inner}/>}
+          <rect x={71} y={93} width={18} height={18} rx={7} fill={sk}/><rect x={71} y={93} width={5} height={18} rx={5} fill="rgba(0,0,0,.08)"/>
+          {hairEl()}
+          <ellipse cx={HX} cy={HY} rx={HR} ry={HR-1} fill={sk}/>
+          <ellipse cx={HX+7} cy={HY-10} rx={24} ry={19} fill="rgba(255,255,255,.13)"/>
+          <ellipse cx={65} cy={63} rx={9} ry={8} fill="#ffffff"/><ellipse cx={95} cy={63} rx={9} ry={8} fill="#ffffff"/>
+          <ellipse cx={65.5} cy={63} rx={5.5} ry={6} fill={ec}/><ellipse cx={95.5} cy={63} rx={5.5} ry={6} fill={ec}/>
+          <ellipse cx={66} cy={63} rx={3} ry={3.5} fill="#060408"/><ellipse cx={96} cy={63} rx={3} ry={3.5} fill="#060408"/>
+          <ellipse cx={68} cy={60} rx={1.8} ry={1.8} fill="rgba(255,255,255,.95)"/><ellipse cx={98} cy={60} rx={1.8} ry={1.8} fill="rgba(255,255,255,.95)"/>
+          <ellipse cx={65} cy={63} rx={9} ry={8} fill="none" stroke="rgba(0,0,0,.2)" strokeWidth={1}/><ellipse cx={95} cy={63} rx={9} ry={8} fill="none" stroke="rgba(0,0,0,.2)" strokeWidth={1}/>
+          <path d="M56,52 Q65,47 74,51" stroke="rgba(0,0,0,.4)" strokeWidth={2.8} fill="none" strokeLinecap="round"/>
+          <path d="M86,51 Q95,47 104,52" stroke="rgba(0,0,0,.4)" strokeWidth={2.8} fill="none" strokeLinecap="round"/>
+          <path d={`M76,71 Q80,76 84,71`} stroke="rgba(0,0,0,.2)" strokeWidth={1.8} fill="none" strokeLinecap="round"/>
+          <ellipse cx={56} cy={72} rx={9} ry={5.5} fill="rgba(255,150,120,.22)"/><ellipse cx={104} cy={72} rx={9} ry={5.5} fill="rgba(255,150,120,.22)"/>
+          {mouthEl()}{fringeEl()}
+          {gl.emoji&&<text x={HX} y={HY+5} textAnchor="middle" dominantBaseline="middle" fontSize="27" style={{fontFamily:"Apple Color Emoji,Segoe UI Emoji,sans-serif"}}>{gl.emoji}</text>}
+          {ht.emoji&&<text x={HX} y={HY-HR+4} textAnchor="middle" dominantBaseline="auto" fontSize="34" style={{fontFamily:"Apple Color Emoji,Segoe UI Emoji,sans-serif"}}>{ht.emoji}</text>}
+          {ac.emoji&&ac.pos!=="none"&&<text x={accP.x} y={accP.y} textAnchor="middle" dominantBaseline="middle" fontSize={`${accP.s}`} style={{fontFamily:"Apple Color Emoji,Segoe UI Emoji,sans-serif"}}>{ac.emoji}</text>}
+          {name&&<><rect x="0" y="276" width="160" height="16" fill="rgba(0,0,0,.72)"/><text x="80" y="286" textAnchor="middle" fontSize="8.5" fill="#ffd700" style={{fontFamily:"'Orbitron',monospace",fontWeight:700,letterSpacing:"1px"}}>{name} · NIV.{lv}</text></>}
+        </g>
+        <rect x="2" y="2" width="156" height="288" rx="13" fill="none" stroke={fr.color} strokeWidth={4} style={fr.glow?{filter:`drop-shadow(0 0 7px ${fr.glow}66)`}:{}}/>
+      </svg>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MAIN GAME
+// ══════════════════════════════════════════════════════════════════
+function Game({user, offline}) {
+  const BG="#0f1629",CARD="#1a2340",CARD2="#212b4a",BORDER="#2d3d6a",TEXT="#d0d8f0",TEXT2="#8090b8",GOLD="#ffd700";
+
+  // Data loading state
+  const [dataReady, setDataReady] = useState(false);
+  const [cloudStatus,setCloudStatus]=useState("idle"); // idle | saving | saved | error
+
+  // Game state
+  const [scr,    setScr]   = useState("hub");
+  const [hero,   setHero]  = useState({name:"Héros",xp:0,streak:1,lastDate:null,raids:0,coins:0,workLog:{}});
+  const [chaps,  setChaps] = useState(mkC());
+  const [quests, setQ]     = useState([]);
+  const [journal,setJ]     = useState([]);
+  const [bought, setBought]= useState([]);
+  const [avatar, setAv]    = useState(DAV);
+  const [owned,  setOwned] = useState(new Set([...FREE_IDS]));
+  const [sched,  setSched] = useState({});
+  const [clan,   setClan]  = useState(null);
+  const [clanData,setClanData]=useState(null);
+
+  // UI state
+  const [raid,   setRaid]  = useState(null);
+  const [selS,   setSelS]  = useState(null);
+  const [selD,   setSelD]  = useState(60);
+  const [monHit, setMH]    = useState(false);
+  const [dmgs,   setDmgs]  = useState([]);
+  const [flashFx,setFlash] = useState(false);
+  const [lvlUp,  setLvlUp] = useState(null);
+  const [ntf,    setNtf]   = useState(null);
+  const [victory,setVic]   = useState(false);
+  const [editN,  setEditN] = useState(false);
+  const [nVal,   setNVal]  = useState("Héros");
+  const [qTxt,   setQTxt]  = useState("");
+  const [jTxt,   setJTxt]  = useState("");
+  const [buyConf,setBuyConf]=useState(null);
+  const [avCat,  setAvCat] = useState("skin");
+  const [shopTab,setShopTab]=useState("rewards");
+  const [editCell,setEditCell]=useState(null);
+  const [cellTxt, setCellTxt]=useState("");
+  const [cellCol, setCellCol]=useState("#60b8ff");
+  const [cellAlert,setCellAlert]=useState(false);
+  const [clanTab,setClanTab]=useState("members");
+  const [rankCat,setRankCat]=useState("time");
+  const [chatTxt,setChatTxt]=useState("");
+  const [joinCode,setJoinCode]=useState("");
+  const [clanName,setClanName]=useState("");
+  const [clock,  setClock] = useState(new Date());
+  const [notifPerm,setNotifPerm]=useState(()=>typeof Notification!=="undefined"?Notification.permission:"denied");
+  const [showLogout,setShowLogout]=useState(false);
+
+  // ── GOOGLE CALENDAR ICS STATE (multi-agenda) ──
+  const [icsLinks,    setIcsLinks]    = useState(()=>sg("gcal_links",[])); // [{url,label,color}]
+  const [icsEvents,   setIcsEvents]   = useState([]);
+  const [icsLoading,  setIcsLoading]  = useState(false);
+  const [icsWeekOff,  setIcsWeekOff]  = useState(0);
+  const [showIcsGuide,setShowIcsGuide]= useState(false);
+  const [icsNewUrl,   setIcsNewUrl]   = useState("");
+  const [icsNewLabel, setIcsNewLabel] = useState("");
+  const [icsNewColor, setIcsNewColor] = useState("#4dffc3");
+  const [icsError,    setIcsError]    = useState("");
+
+  const tmrRef=useRef(null),ntfRef=useRef(null),dmgId=useRef(0),doneRef=useRef(false);
+  const saveTimer=useRef(null),firedRef=useRef(new Set());
+
+  // ── LOAD DATA ──────────────────────────────────────────────────
+  useEffect(()=>{
+    const load=async()=>{
+      let data=null;
+      // Try cloud first if logged in
+      if(user&&sb&&!offline){
+        try{
+          const {data:row}=await sb.from("game_saves").select("data").eq("user_id",user.id).single();
+          if(row?.data)data=row.data;
+        }catch(e){}
+      }
+      // Fall back to localStorage
+      if(!data){
+        const pseudo=user?.user_metadata?.pseudo||sg("r6h",{name:"Héros"}).name;
+        data={
+          hero:sg("r6h",{name:pseudo,xp:0,streak:1,lastDate:null,raids:0,coins:0,workLog:{}}),
+          chaps:(()=>{const m=mkC(),c=sg("r6c",mkC());Object.keys(m).forEach(s=>{if(c[s])m[s]=m[s].map(ch=>c[s].find(sc=>sc.name===ch.name)||ch);});return m;})(),
+          quests:sg("r6q",[]),journal:sg("r6j",[]),bought:sg("r6br",[]),
+          avatar:sg("r6av",DAV),owned:sg("r6own",[...FREE_IDS]),
+          sched:sg("r6sc",{}),clan:sg("r6clan",null),
+        };
+      }
+      // Apply data
+      setHero(h=>{
+        const base=data.hero||{name:"Héros",xp:0,streak:1,lastDate:null,raids:0,coins:0};
+        // Streak check
+        const today=new Date().toDateString(),y=new Date();y.setDate(y.getDate()-1);
+        const streak=base.lastDate===today?base.streak:base.lastDate===y.toDateString()?(base.streak||1)+1:1;
+        return{...base,streak,lastDate:today};
+      });
+      if(data.chaps){const m=mkC();Object.keys(m).forEach(s=>{if(data.chaps[s])m[s]=m[s].map(ch=>data.chaps[s].find(sc=>sc.name===ch.name)||ch);});setChaps(m);}
+      if(data.quests)setQ(data.quests);
+      if(data.journal)setJ(data.journal);
+      if(data.bought)setBought(data.bought);
+      if(data.avatar)setAv(data.avatar);
+      if(data.owned)setOwned(new Set(data.owned));
+      if(data.sched)setSched(data.sched);
+      if(data.clan){setClan(data.clan);const cd=sg(`clan_${data.clan.code}`,null);if(cd)setClanData(cd);}
+      setNVal((data.hero?.name)||user?.user_metadata?.pseudo||"Héros");
+      setDataReady(true);
+    };
+    load();
+  },[user]);
+
+  // ── CLOUD SAVE (debounced 4s) ───────────────────────────────────
+  useEffect(()=>{
+    if(!dataReady)return;
+    // Save to localStorage immediately
+    ss("r6h",hero);ss("r6c",chaps);ss("r6q",quests);ss("r6j",journal);
+    ss("r6br",bought);ss("r6av",avatar);ss("r6own",[...owned]);ss("r6sc",sched);
+    if(clan)ss("r6clan",clan);
+    // Debounced cloud save
+    if(!user||!sb||offline)return;
+    if(saveTimer.current)clearTimeout(saveTimer.current);
+    setCloudStatus("idle");
+    saveTimer.current=setTimeout(async()=>{
+      setCloudStatus("saving");
+      try{
+        const data={hero,chaps,quests,journal,bought,avatar,owned:[...owned],sched,clan};
+        await sb.from("game_saves").upsert({user_id:user.id,data,updated_at:new Date().toISOString()},{onConflict:"user_id"});
+        setCloudStatus("saved");
+        setTimeout(()=>setCloudStatus("idle"),3000);
+      }catch(e){setCloudStatus("error");setTimeout(()=>setCloudStatus("idle"),4000);}
+    },4000);
+  },[hero,chaps,quests,journal,bought,avatar,owned,sched,clan,dataReady]);
+
+  // ── CLOCK ──
+  useEffect(()=>{const t=setInterval(()=>setClock(new Date()),1000);return()=>clearInterval(t);},[]);
+
+  // ── ALERTS ──
+  useEffect(()=>{
+    const check=()=>{
+      const now=new Date(),h=now.getHours(),m=now.getMinutes();if(m!==0)return;
+      const dow=now.getDay(),dayIdx=dow===0?6:dow-1,slotIdx=h-6;
+      if(slotIdx<0||slotIdx>18)return;
+      const k=`${dayIdx}-${slotIdx}`,cell=sched[k];
+      if(cell?.alert&&!firedRef.current.has(k+"-"+now.toDateString())){
+        firedRef.current.add(k+"-"+now.toDateString());
+        if(notifPerm==="granted"&&typeof Notification!=="undefined")
+          new Notification(`⏰ PRÉPA RPG — ${h}h00`,{body:`🗓️ ${cell.text} commence maintenant !`});
+        else showNtf({msg:`⏰ ${cell.text} commence !`,col:"#ffb347"});
+      }
+    };
+    const t=setInterval(check,30000);check();return()=>clearInterval(t);
+  },[sched,notifPerm]);
+
+  // Cross-tab clan sync
+  useEffect(()=>{
+    const h=(e)=>{if(clan?.code&&e.key===`clan_${clan.code}`){try{const d=JSON.parse(e.newValue);if(d)setClanData(d);}catch{}}};
+    window.addEventListener("storage",h);return()=>window.removeEventListener("storage",h);
+  },[clan]);
+
+  const showNtf=useCallback((obj)=>{
+    setNtf(obj);if(ntfRef.current)clearTimeout(ntfRef.current);ntfRef.current=setTimeout(()=>setNtf(null),3200);
+  },[]);
+
+  const notify=useCallback((msg,col=GOLD)=>showNtf({msg,col}),[showNtf]);
+
+  const gainXP=useCallback((amt)=>{
+    setHero(p=>{
+      const oLv=getLv(p.xp),nxp=p.xp+amt,nLv=getLv(nxp),coins=p.coins+Math.floor(amt/2);
+      const u={...p,xp:nxp,coins};
+      if(nLv>oLv)setTimeout(()=>setLvlUp({lv:nLv,title:getT(nLv)}),400);
+      else notify(`⚡ +${amt} XP  |  +${Math.floor(amt/2)} 🪙`,GOLD);
+      return u;
+    });
+  },[notify]);
+
+  const spawnDmg=n=>{const id=dmgId.current++;setDmgs(p=>[...p,{id,n}]);setTimeout(()=>setDmgs(p=>p.filter(d=>d.id!==id)),1200);};
+
+  const startRaid=()=>{if(!selS)return;doneRef.current=false;setRaid({subject:selS,st:"active",total:selD*60,time:selD*60,el:0,mhp:100,mmhp:100,log:[`📖 Donjon ${selS} — Installe-toi et bonne session !`]});setScr("raid");};
+
+  useEffect(()=>{
+    if(!raid||raid.st!=="active"){clearInterval(tmrRef.current);return;}
+    tmrRef.current=setInterval(()=>{
+      setRaid(p=>{
+        if(!p||p.st!=="active")return p;
+        const t=p.time-1,el=p.el+1;
+        const mhp=Math.ceil((t/p.total)*100);
+        let newLog=p.log;
+        // Flavor message every 30 seconds
+        if(el%30===0&&t>0){
+          const msgIdx=Math.floor(el/30)%(RAID_MSGS.length);
+          newLog=[RAID_MSGS[msgIdx],...p.log].slice(0,5);
+        }
+        if(t<=0)return{...p,st:"complete",time:0,mhp:0,el,log:["🏆 Session terminée — le donjon est vaincu !"]};
+        return{...p,time:t,mhp,el,log:newLog};
+      });
+    },1000);
+    return()=>clearInterval(tmrRef.current);
+  },[raid?.st]);
+
+  useEffect(()=>{
+    if(raid?.st==="complete"&&!doneRef.current){
+      doneRef.current=true;setVic(true);
+      setTimeout(()=>{
+        gainXP(XPMAP[selD]||90);
+        const today=new Date().toISOString().split("T")[0];
+        setHero(p=>{
+          const wl={...(p.workLog||{})};
+          wl[today]=(wl[today]||0)+selD;
+          const u={...p,raids:(p.raids||0)+1,workLog:wl};
+          return u;
+        });
+        setChaps(p=>{const u={...p};const fl=u[selS]?u[selS].findIndex(c=>c.s===0):-1;if(fl>=0){u[selS]=u[selS].map((c,i)=>i===fl?{...c,s:1}:c);}return u;});
+        setTimeout(()=>{setScr("hub");setRaid(null);setVic(false);doneRef.current=false;},2200);
+      },600);
+    }
+  },[raid?.st]);
+
+  const attack=()=>{
+    if(!raid||raid.st!=="active")return;
+    const dmg=Math.floor(Math.random()*22)+10;
+    setMH(true);setTimeout(()=>setMH(false),400);setFlash(true);setTimeout(()=>setFlash(false),110);spawnDmg(dmg);
+    setRaid(p=>{if(!p||p.st!=="active")return p;const mhp=Math.max(0,p.mhp-dmg);const log=[`💥 ${dmg} dégâts !`,...p.log].slice(0,5);return mhp<=0?{...p,mhp:0,atk:p.atk+1,log,st:"complete"}:{...p,mhp,atk:p.atk+1,log};});
+  };
+
+  const cycleC=(s,i)=>{const nx=(chaps[s][i].s+1)%3;const u={...chaps,[s]:chaps[s].map((c,j)=>j===i?{...c,s:nx}:c)};setChaps(u);if(nx===1)gainXP(10);if(nx===2)gainXP(30);};
+  const addQ=()=>{if(!qTxt.trim())return;const u=[{id:Date.now(),text:qTxt.trim(),done:false},...quests];setQ(u);setQTxt("");};
+  const doneQ=id=>{const u=quests.map(q=>q.id===id?{...q,done:true}:q);setQ(u);gainXP(25);};
+  const delQ=id=>setQ(quests.filter(q=>q.id!==id));
+  const addJ=()=>{if(!jTxt.trim())return;const e={id:Date.now(),date:new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"}),text:jTxt.trim()};setJ([e,...journal].slice(0,40));setJTxt("");gainXP(15);};
+  const saveN=()=>{if(!nVal.trim())return;setHero(p=>({...p,name:nVal.trim()}));setEditN(false);};
+
+  const buyReward=item=>{
+    if(hero.coins<item.cost){notify("Pas assez de pièces ! 🪙","#ff6b8a");return;}
+    setHero(p=>({...p,coins:p.coins-item.cost}));
+    setBought(b=>[{id:Date.now(),name:item.label,icon:item.icon,date:new Date().toLocaleDateString("fr-FR",{day:"numeric",month:"long"})},...b].slice(0,20));
+    setBuyConf(null);notify(`🎉 ${item.label} débloquée !`,GOLD);
+  };
+
+  const equipAv=(cat,item)=>{
+    if(owned.has(item.id)){setAv(a=>({...a,[cat]:item.id}));}
+    else{
+      if(hero.coins<item.cost){notify(`Il manque ${item.cost-hero.coins} 🪙`,"#ff6b8a");return;}
+      setHero(p=>({...p,coins:p.coins-item.cost}));
+      setOwned(o=>{const n=new Set(o);n.add(item.id);return n;});
+      setAv(a=>({...a,[cat]:item.id}));notify(`✅ Débloqué : ${item.label} !`,GOLD);
+    }
+  };
+
+  const requestNotifPerm=async()=>{
+    if(typeof Notification==="undefined"){notify("Notifications non supportées","#ff6b8a");return;}
+    const p=await Notification.requestPermission();setNotifPerm(p);
+    if(p==="granted")notify("✅ Notifications activées !","#4dffc3");
+    else notify("❌ Notifications refusées","#ff6b8a");
+  };
+
+  // ── CLAN (Supabase cloud) ──────────────────────────────────────
+  const getMyUid=()=>{
+    // Use Supabase user id if logged in, else localStorage uid
+    if(user?.id)return user.id;
+    let uid=sg("r6uid","");if(!uid){uid=rnd6();ss("r6uid",uid);}return uid;
+  };
+
+  const createClan=async()=>{
+    if(!clanName.trim())return;
+    const code=rnd6(),uid=getMyUid();
+    const cd={code,name:clanName.trim(),createdAt:Date.now(),
+      members:[{id:uid,name:hero.name,xp:hero.xp,raids:hero.raids||0,workMinutes:Object.values(hero.workLog||{}).reduce((a,b)=>a+b,0),mastN:allC.filter(c=>c.s===2).length,streak:hero.streak||1,avatar,online:Date.now(),role:"leader"}],
+      chat:[],
+      challenges:[{id:1,text:"Faire 3 raids cette semaine",reward:50,progress:{}},{id:2,text:"Maîtriser 5 chapitres",reward:80,progress:{}},{id:3,text:"Écrire dans le grimoire 3 fois",reward:40,progress:{}}]
+    };
+    // Save to Supabase if available
+    if(sb&&!offline){
+      const {error}=await sb.from("clans").insert({code,name:clanName.trim(),data:cd});
+      if(error){notify("❌ Erreur création clan","#ff6b8a");return;}
+    } else {
+      ss(`clan_${code}`,cd);
+    }
+    const myRef={code,name:clanName.trim(),role:"leader"};
+    setClan(myRef);setClanData(cd);setClanName("");
+    notify(`⚔️ Clan créé ! Code : ${code}`,GOLD);
+  };
+
+  const joinClan=async()=>{
+    const code=joinCode.trim().toUpperCase();if(!code)return;
+    const uid=getMyUid();
+    let d=null;
+    // Try Supabase first
+    if(sb&&!offline){
+      const {data:row,error}=await sb.from("clans").select("data").eq("code",code).single();
+      if(error||!row){notify("❌ Code introuvable","#ff6b8a");return;}
+      d=row.data;
+    } else {
+      d=sg(`clan_${code}`,null);
+      if(!d){notify("❌ Code introuvable (hors ligne)","#ff6b8a");return;}
+    }
+    const alreadyIn=d.members.find(m=>m.id===uid);
+    let members=d.members;
+    if(!alreadyIn)members=[...members,{id:uid,name:hero.name,xp:hero.xp,raids:hero.raids||0,workMinutes:Object.values(hero.workLog||{}).reduce((a,b)=>a+b,0),mastN:allC.filter(c=>c.s===2).length,streak:hero.streak||1,avatar,online:Date.now(),role:"member"}];
+    const nd={...d,members};
+    if(sb&&!offline){
+      await sb.from("clans").update({data:nd}).eq("code",code);
+    } else {
+      ss(`clan_${code}`,nd);
+    }
+    const myRef={code,name:d.name,role:"member"};
+    setClan(myRef);setClanData(nd);setJoinCode("");
+    notify(`✅ Rejoint "${d.name}" !`,"#4dffc3");
+  };
+
+  const sendChat=async()=>{
+    if(!chatTxt.trim()||!clan?.code)return;
+    const uid=getMyUid();
+    // Fetch latest data first
+    let d=clanData;
+    if(sb&&!offline){
+      const {data:row}=await sb.from("clans").select("data").eq("code",clan.code).single();
+      if(row?.data)d=row.data;
+    }
+    if(!d)return;
+    const msg={id:Date.now(),uid,name:hero.name,text:chatTxt.trim(),time:new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})};
+    const nd={...d,chat:[...(d.chat||[]),msg].slice(-80)};
+    if(sb&&!offline){
+      await sb.from("clans").update({data:nd}).eq("code",clan.code);
+    } else {
+      ss(`clan_${clan.code}`,nd);
+    }
+    setClanData(nd);setChatTxt("");
+  };
+
+  const leaveClan=async()=>{
+    if(!clan?.code)return;
+    const uid=getMyUid();
+    if(sb&&!offline){
+      const {data:row}=await sb.from("clans").select("data").eq("code",clan.code).single();
+      if(row?.data){
+        const nd={...row.data,members:row.data.members.filter(m=>m.id!==uid)};
+        await sb.from("clans").update({data:nd}).eq("code",clan.code);
+      }
+    } else {
+      const d=sg(`clan_${clan.code}`,null);
+      if(d)ss(`clan_${clan.code}`,{...d,members:d.members.filter(m=>m.id!==uid)});
+    }
+    setClan(null);setClanData(null);
+  };
+
+  const refreshClan=async()=>{
+    if(!clan?.code)return;
+    if(sb&&!offline){
+      const {data:row}=await sb.from("clans").select("data").eq("code",clan.code).single();
+      if(row?.data)setClanData(row.data);
+    } else {
+      const d=sg(`clan_${clan.code}`,null);if(d)setClanData(d);
+    }
+  };
+
+  // Auto-refresh clan every 10s when on clan tab
+  useEffect(()=>{
+    if(scr!=="clan"||!clan?.code)return;
+    refreshClan();
+    const t=setInterval(refreshClan,10000);
+    return()=>clearInterval(t);
+  },[scr,clan?.code]);
+
+  // Sync my stats to clan on XP change
+  useEffect(()=>{
+    if(!clan?.code||!dataReady)return;
+    const syncStats=async()=>{
+      const uid=getMyUid();
+      if(sb&&!offline){
+        const {data:row}=await sb.from("clans").select("data").eq("code",clan.code).single();
+        if(!row?.data)return;
+        const members=row.data.members.map(m=>m.id===uid?{...m,name:hero.name,xp:hero.xp,raids:hero.raids||0,workMinutes:Object.values(hero.workLog||{}).reduce((a,b)=>a+b,0),mastN:allC.filter(c=>c.s===2).length,streak:hero.streak||1,avatar,online:Date.now()}:m);
+        await sb.from("clans").update({data:{...row.data,members}}).eq("code",clan.code);
+      }
+    };
+    const t=setTimeout(syncStats,2000);
+    return()=>clearTimeout(t);
+  },[hero.xp,hero.raids]);
+
+  const openCell=(d,h)=>{const k=`${d}-${h}`,v=sched[k]||null;setEditCell({d,h,k});setCellTxt(v?.text||"");setCellCol(v?.color||"#60b8ff");setCellAlert(v?.alert||false);};
+  const saveCell=async()=>{
+    const ns={...sched};
+    if(cellTxt.trim())ns[editCell.k]={text:cellTxt.trim(),color:cellCol,alert:cellAlert};
+    else delete ns[editCell.k];
+    setSched(ns);setEditCell(null);
+  };
+  const clearCell=()=>{const ns={...sched};delete ns[editCell.k];setSched(ns);setEditCell(null);};
+
+  const handleLogout=async()=>{if(sb)await sb.auth.signOut();};
+
+  // ══════════════════════════════════════════════════════════════════
+  // GOOGLE CALENDAR — SYSTÈME ICS MULTI-AGENDA
+  // Chaque utilisateur colle ses liens ICS privés depuis Google Calendar.
+  // Supporte plusieurs agendas simultanément (principal, tâches, etc.)
+  // ══════════════════════════════════════════════════════════════════
+
+  const parseICS=(icsText)=>{
+    const events=[];
+    const lines=icsText.replace(/\r\n /g,"").replace(/\r\n/g,"\n").replace(/\n /g,"").split("\n");
+    let ev=null;
+    lines.forEach(line=>{
+      if(line==="BEGIN:VEVENT"){ev={};}
+      else if(line==="END:VEVENT"&&ev){events.push(ev);ev=null;}
+      else if(ev){
+        const idx=line.indexOf(":");if(idx<0)return;
+        const key=line.substring(0,idx).split(";")[0];
+        const val=line.substring(idx+1);
+        if(key==="SUMMARY")ev.summary=val;
+        else if(key==="DTSTART"||key==="DTSTART")ev.start=val;
+        else if(key==="DTEND")ev.end=val;
+        else if(key==="UID")ev.uid=val;
+        else if(key==="DESCRIPTION")ev.description=val.replace(/\\n/g,"\n");
+        else if(key==="LOCATION")ev.location=val;
+      }
+    });
+    return events;
+  };
+
+  const parseICSDate=(str)=>{
+    if(!str)return null;
+    const clean=str.replace(/Z$/,"");
+    if(clean.length===8)return new Date(parseInt(clean.slice(0,4)),parseInt(clean.slice(4,6))-1,parseInt(clean.slice(6,8)));
+    return new Date(parseInt(clean.slice(0,4)),parseInt(clean.slice(4,6))-1,parseInt(clean.slice(6,8)),parseInt(clean.slice(9,11)),parseInt(clean.slice(11,13)),parseInt(clean.slice(13,15)||0));
+  };
+
+  const getWeekMonday=(offsetWeeks=0)=>{
+    const d=new Date();const day=d.getDay();
+    d.setDate(d.getDate()-(day===0?6:day-1)+offsetWeeks*7);
+    d.setHours(0,0,0,0);return d;
+  };
+
+  const getWeekLabel=(offset=0)=>{
+    const monday=getWeekMonday(offset);
+    const sunday=new Date(monday);sunday.setDate(monday.getDate()+6);
+    const fmt=d=>d.toLocaleDateString("fr-FR",{day:"numeric",month:"short"});
+    if(offset===0)return`Cette semaine (${fmt(monday)} – ${fmt(sunday)})`;
+    if(offset===-1)return`Semaine dernière`;
+    if(offset===1)return`Semaine prochaine`;
+    return`${fmt(monday)} – ${fmt(sunday)}`;
+  };
+
+  // Fetch ONE ICS link → returns events array
+  const fetchOneICS=async(url)=>{
+    const proxy=`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const r=await fetch(proxy);
+    if(!r.ok)throw new Error("Impossible de charger");
+    const text=await r.text();
+    if(!text.includes("BEGIN:VCALENDAR"))throw new Error("Lien ICS invalide");
+    return parseICS(text);
+  };
+
+  // Fetch ALL ICS links for current week
+  const fetchAllICS=useCallback(async(links,offset=0)=>{
+    if(!links||links.length===0){setIcsEvents([]);return;}
+    setIcsLoading(true);setIcsError("");
+    const monday=getWeekMonday(offset);
+    const sunday=new Date(monday);sunday.setDate(monday.getDate()+7);
+    try{
+      const allResults=await Promise.all(links.map(async link=>{
+        try{
+          const evs=await fetchOneICS(link.url);
+          // Tag each event with its agenda color and label
+          return evs.map(ev=>({...ev,_color:link.color,_label:link.label}));
+        }catch(e){return [];} // silently skip failed links
+      }));
+      const flat=allResults.flat();
+      // Filter to current week
+      const weekEvs=flat.filter(ev=>{
+        const start=parseICSDate(ev.start);
+        return start&&start>=monday&&start<sunday;
+      });
+      setIcsEvents(weekEvs);
+    }catch(e){setIcsError("Erreur de synchronisation");}
+    setIcsLoading(false);
+  },[]);
+
+  // Auto-fetch when on planning tab
+  useEffect(()=>{
+    if(scr==="planning"&&icsLinks.length>0)fetchAllICS(icsLinks,icsWeekOff);
+  },[scr,icsWeekOff,icsLinks]);
+
+  // Add a new ICS link
+  const addIcsLink=async()=>{
+    if(!icsNewUrl.trim()){setIcsError("Colle d'abord un lien ICS");return;}
+    setIcsLoading(true);setIcsError("");
+    try{
+      await fetchOneICS(icsNewUrl.trim()); // validate it works
+      const label=icsNewLabel.trim()||`Agenda ${icsLinks.length+1}`;
+      const newLink={url:icsNewUrl.trim(),label,color:icsNewColor,id:Date.now()};
+      const updated=[...icsLinks,newLink];
+      setIcsLinks(updated);ss("gcal_links",updated);
+      setIcsNewUrl("");setIcsNewLabel("");setIcsNewColor("#4dffc3");
+      notify(`✅ "${label}" connecté !`,"#4dffc3");
+      fetchAllICS(updated,icsWeekOff);
+    }catch(e){setIcsError(e.message||"Lien invalide — vérifie l'URL");}
+    setIcsLoading(false);
+  };
+
+  // Remove an ICS link
+  const removeIcsLink=(id)=>{
+    const updated=icsLinks.filter(l=>l.id!==id);
+    setIcsLinks(updated);ss("gcal_links",updated);
+    fetchAllICS(updated,icsWeekOff);
+    notify("Agenda déconnecté","#ff6b8a");
+  };
+
+  // Map event to grid slot
+  const icsEventToSlot=(ev,offset=0)=>{
+    const start=parseICSDate(ev.start);if(!start)return null;
+    const monday=getWeekMonday(offset);
+    const diffDays=Math.floor((start-monday)/(1000*60*60*24));
+    if(diffDays<0||diffDays>6)return null;
+    const h=start.getHours();if(h<6||h>23)return null;
+    return{dayIndex:diffDays,hourIndex:h-6};
+  };
+
+  const icsBySlot=useCallback(()=>{
+    const map={};
+    icsEvents.forEach(ev=>{
+      const slot=icsEventToSlot(ev,icsWeekOff);if(!slot)return;
+      const k=`${slot.dayIndex}-${slot.hourIndex}`;
+      if(!map[k])map[k]=[];map[k].push(ev);
+    });
+    return map;
+  },[icsEvents,icsWeekOff]);
+
+  const icsConnected=icsLinks.length>0;
+
+  // Agenda color palette for new links
+  const ICS_COLORS=["#4dffc3","#60b8ff","#ff6b8a","#ffb347","#c084fc","#ffd700","#90ee90","#ff9944"];
+
+  const lv=getLv(hero.xp),xpPct=getPct(hero.xp);
+  const allC=Object.values(chaps).flat();
+  const mastN=allC.filter(c=>c.s===2).length,seenN=allC.filter(c=>c.s>=1).length;
+  const DAYS_LABEL=["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"];
+  const HOURS=Array.from({length:19},(_,i)=>i+6);
+  const SCHED_COLORS=["#ff6b8a","#60b8ff","#4dffc3","#ffb347","#c084fc","#ffd700","#90ee90","#ff9944","#ffffff"];
+  const AV_CATS=[{id:"skin",label:"👤 Peau"},{id:"hairStyle",label:"💇 Coiffure"},{id:"hairColor",label:"🎨 Cheveux"},{id:"eyes",label:"👁️ Yeux"},{id:"mouth",label:"😊 Bouche"},{id:"outfit",label:"👕 Tenue"},{id:"hat",label:"🎩 Chapeau"},{id:"glasses",label:"👓 Lunettes"},{id:"accessory",label:"⚔️ Objet"},{id:"background",label:"🌌 Fond"},{id:"frame",label:"🖼️ Cadre"}];
+
+  // Loading screen
+  if(!dataReady) return(
+    <div style={{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"18px"}}>
+      <style>{CSS}</style>
+      <div style={{width:"48px",height:"48px",border:`3px solid ${BORDER}`,borderTopColor:GOLD,borderRadius:"50%",animation:"spin .7s linear infinite"}}/>
+      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",color:TEXT2,letterSpacing:".25em"}}>CHARGEMENT...</div>
+    </div>
+  );
+
+  // ── RAID ──────────────────────────────────────────────────────
+  if(scr==="raid"&&raid){
+    const dg=DUNGEONS[raid.subject];const tM=Math.floor(raid.time/60),tS=raid.time%60;
+    const mPct=(raid.mhp/raid.mmhp)*100,tPct=(raid.time/raid.total)*100,danger=tPct<=20&&raid.st==="active";
+    return(
+      <div style={{minHeight:"100vh",background:BG,overflow:"hidden",position:"relative",fontFamily:"'Rajdhani',sans-serif",userSelect:"none"}}>
+        <style>{CSS}</style>
+        <div style={{position:"fixed",inset:0,background:`radial-gradient(ellipse at 50% 0%,${dg.glow},transparent 55%),${BG}`,zIndex:0,pointerEvents:"none"}}/>
+        {flashFx&&<div style={{position:"fixed",inset:0,background:"rgba(255,255,255,.18)",zIndex:60,pointerEvents:"none",animation:"screenFlash .11s ease forwards"}}/>}
+        {ntf&&<div style={{position:"fixed",top:14,left:"50%",transform:"translateX(-50%)",zIndex:999,background:CARD2,border:`1px solid ${ntf.col}66`,borderRadius:"12px",padding:"10px 22px",color:ntf.col,fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",letterSpacing:".1em",animation:"ntfAnim 3.2s ease forwards",whiteSpace:"nowrap",maxWidth:"92vw",textAlign:"center"}}>{ntf.msg}</div>}
+        <div style={{position:"relative",zIndex:10,maxWidth:"460px",margin:"0 auto",padding:"0 16px",display:"flex",flexDirection:"column",minHeight:"100vh"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0 10px",borderBottom:`1px solid ${BORDER}`,flexShrink:0}}>
+            <button className="btn" onClick={()=>{clearInterval(tmrRef.current);setRaid(null);setVic(false);doneRef.current=false;setScr("hub");}} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"8px",padding:"6px 14px",color:TEXT2,fontSize:".78rem",fontWeight:600}}>← FUIR</button>
+            <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",color:dg.color,letterSpacing:".15em",fontWeight:700}}>{raid.subject.toUpperCase()}</div>
+            <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:TEXT2}}>{DUR_LABEL[selD]||selD+"MIN"}</div>
+          </div>
+          <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",paddingTop:"16px"}}>
+            <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(.85rem,4vw,1.05rem)",fontWeight:900,color:dg.color,letterSpacing:".2em",marginBottom:"10px",textShadow:`0 0 28px ${dg.color}`}}>{dg.boss.name}</div>
+            <div style={{width:"100%",maxWidth:"390px",marginBottom:"14px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:"4px"}}>
+                <span style={{fontSize:".7rem",color:"#ff6b8a",fontFamily:"'Orbitron',sans-serif",fontWeight:700}}>❤️ PV ENNEMI</span>
+                <span style={{fontSize:".7rem",color:"#ff6b8a",fontFamily:"'Orbitron',sans-serif"}}>{raid.mhp}%</span>
+              </div>
+              <div style={{height:"20px",background:CARD2,borderRadius:"10px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+                <div style={{height:"100%",width:`${mPct}%`,background:"linear-gradient(90deg,#cc0022,#ff3355,#ff7766)",borderRadius:"10px",transition:"width .5s ease",position:"relative",overflow:"hidden"}}>
+                  <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(255,255,255,.25),transparent 50%)"}}/>
+                </div>
+              </div>
+            </div>
+            <div style={{position:"relative",textAlign:"center",marginBottom:"8px"}}>
+              <div style={{fontSize:"clamp(6rem,20vw,9rem)",lineHeight:1,animation:victory?"bossDead .7s ease forwards":monHit?"bossHit .4s ease":"bossFloat 3s ease-in-out infinite",filter:victory?"none":monHit?`drop-shadow(0 0 60px white)`:`drop-shadow(0 0 30px ${dg.color})`}}>{dg.boss.icon}</div>
+              {dmgs.map(d=><div key={d.id} style={{position:"absolute",top:"10%",left:"50%",fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(1.4rem,6vw,2rem)",fontWeight:900,color:"#ff5577",textShadow:"0 0 14px #ff5577",animation:"dmgFloat 1.2s ease forwards",pointerEvents:"none",transform:"translateX(-50%)",zIndex:20}}>-{d.n}</div>)}
+            </div>
+            <div style={{fontSize:".78rem",color:TEXT2,fontStyle:"italic",fontFamily:"'Exo 2',sans-serif",marginBottom:"16px",textAlign:"center"}}>{dg.boss.flavor}</div>
+            <div style={{position:"relative",width:148,height:148,marginBottom:"12px",flexShrink:0}}>
+              <svg style={{position:"absolute",inset:0,width:"100%",height:"100%",transform:"rotate(-90deg)"}} viewBox="0 0 148 148">
+                <circle cx="74" cy="74" r="64" fill="none" stroke={CARD2} strokeWidth="9"/>
+                <circle cx="74" cy="74" r="64" fill="none" stroke={danger?"#ff5577":dg.color} strokeWidth="9" strokeDasharray={`${2*Math.PI*64}`} strokeDashoffset={`${2*Math.PI*64*(1-tPct/100)}`} strokeLinecap="round" style={{transition:"stroke-dashoffset 1s linear",filter:`drop-shadow(0 0 8px ${danger?"#ff5577":dg.color})`}}/>
+              </svg>
+              <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(1.8rem,7vw,2.4rem)",fontWeight:900,color:danger?"#ff5577":TEXT,lineHeight:1,transition:"color .3s"}}>{p2(tM)}:{p2(tS)}</div>
+                <div style={{fontSize:".5rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif",letterSpacing:".18em",marginTop:4}}>RESTANT</div>
+              </div>
+            </div>
+            <div style={{width:"100%",maxWidth:"390px",background:CARD,border:`1px solid ${BORDER}`,borderRadius:"12px",padding:"9px 14px",marginBottom:"11px",minHeight:"60px"}}>
+              {raid.log.map((e,i)=><div key={i} style={{fontSize:".8rem",color:i===0?TEXT:TEXT2,fontWeight:i===0?600:400,lineHeight:1.6,opacity:Math.max(0,1-i*.28)}}>{e}</div>)}
+            </div>
+            <div style={{width:"100%",maxWidth:"390px",marginBottom:"14px"}}>
+              {victory?<div style={{textAlign:"center",padding:"20px",animation:"victBounce .6s ease forwards"}}><div style={{fontSize:"3.5rem",marginBottom:"8px",filter:"drop-shadow(0 0 40px gold)"}}>🏆</div><div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.3rem",fontWeight:900,color:GOLD,letterSpacing:".25em"}}>VICTOIRE !</div><div style={{fontSize:".76rem",color:TEXT2,marginTop:"8px"}}>+{XPMAP[selD]} XP · +{Math.floor(XPMAP[selD]/2)} 🪙 · +{selD} min logged</div></div>
+              :(()=>{const pct=(1-raid.time/raid.total)*100;const phase=pct<20?"🌱 Mise en route":pct<45?"📚 Concentration":pct<70?"🔥 Dans la zone":pct<90?"⚡ Flow state":"🏆 Dernière ligne !";const phaseCol=pct<20?TEXT2:pct<45?"#60b8ff":pct<70?"#ffb347":"#4dffc3";return(
+                <div style={{width:"100%",maxWidth:"390px"}}>
+                  <div style={{background:`linear-gradient(145deg,${CARD2},${dg.glow.replace(".3",".12")})`,border:`2px solid ${dg.color}55`,borderRadius:"18px",padding:"18px",textAlign:"center",position:"relative",overflow:"hidden"}}>
+                    <div style={{position:"absolute",inset:0,background:`linear-gradient(180deg,rgba(255,255,255,.04),transparent)`,borderRadius:"16px"}}/>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.1rem",fontWeight:900,color:phaseCol,letterSpacing:".15em",marginBottom:"6px",textShadow:`0 0 20px ${phaseCol}66`}}>{phase}</div>
+                    <div style={{fontSize:".78rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic"}}>Continue à travailler — le temps s'écoule ⏳</div>
+                    <div style={{marginTop:"12px",height:"6px",background:CARD,borderRadius:"3px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+                      <div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${dg.color}66,${dg.color})`,borderRadius:"3px",transition:"width 1s linear",boxShadow:`0 0 8px ${dg.color}55`}}/>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",marginTop:"4px"}}>
+                      <span style={{fontSize:".52rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>DÉBUT</span>
+                      <span style={{fontSize:".52rem",color:dg.color,fontFamily:"'Orbitron',sans-serif",fontWeight:700}}>{Math.round(pct)}%</span>
+                      <span style={{fontSize:".52rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>FIN</span>
+                    </div>
+                  </div>
+                </div>
+              );})()}
+            </div>
+          </div>
+          <div style={{padding:"0 0 20px",flexShrink:0}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+              <span style={{fontSize:".64rem",color:"#4dffc3",fontFamily:"'Orbitron',sans-serif",fontWeight:600}}>⚔️ {hero.name} · NIV.{lv}</span>
+              <span style={{fontSize:".64rem",color:"#4dffc388",fontFamily:"'Orbitron',sans-serif"}}>FOCUS</span>
+            </div>
+            <div style={{height:"8px",background:CARD2,borderRadius:"4px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+              <div style={{height:"100%",width:`${tPct}%`,background:"linear-gradient(90deg,#4dffc3,#22cc88)",borderRadius:"4px",transition:"width 1s linear"}}/>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── MAIN LAYOUT ──────────────────────────────────────────────
+  return(
+    <div style={{minHeight:"100vh",background:BG,fontFamily:"'Rajdhani',sans-serif",color:TEXT,overflowX:"hidden"}}>
+      <style>{CSS}</style>
+
+      {ntf&&<div style={{position:"fixed",top:14,left:"50%",transform:"translateX(-50%)",zIndex:999,background:CARD2,border:`1px solid ${ntf.col}55`,borderRadius:"12px",padding:"10px 22px",color:ntf.col,fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",letterSpacing:".1em",animation:"ntfAnim 3.2s ease forwards",whiteSpace:"nowrap",maxWidth:"92vw",textAlign:"center",boxShadow:`0 4px 24px ${ntf.col}22`}}>{ntf.msg}</div>}
+
+      {/* LOGOUT MENU */}
+      {showLogout&&(
+        <div style={{position:"fixed",inset:0,zIndex:890,background:"rgba(8,12,24,.88)"}} onClick={()=>setShowLogout(false)}>
+          <div onClick={e=>e.stopPropagation()} style={{position:"absolute",top:"70px",right:"14px",background:CARD,border:`1px solid ${BORDER}`,borderRadius:"14px",padding:"16px",minWidth:"220px",animation:"popIn .2s ease",boxShadow:"0 8px 32px rgba(0,0,0,.6)"}}>
+            {user&&<div style={{marginBottom:"12px",paddingBottom:"12px",borderBottom:`1px solid ${BORDER}`}}>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".56rem",color:TEXT2,letterSpacing:".12em",marginBottom:"4px"}}>CONNECTÉ EN TANT QUE</div>
+              <div style={{fontSize:".88rem",color:TEXT,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.email}</div>
+              <div style={{display:"flex",alignItems:"center",gap:"6px",marginTop:"6px"}}>
+                {cloudStatus==="saving"&&<><span style={{width:"8px",height:"8px",borderRadius:"50%",background:"#ffb347",flexShrink:0,animation:"cloudPulse 1s ease infinite"}}/>
+                  <span style={{fontSize:".66rem",color:"#ffb347",fontFamily:"'Orbitron',sans-serif"}}>Sauvegarde...</span></>}
+                {cloudStatus==="saved"&&<><span style={{width:"8px",height:"8px",borderRadius:"50%",background:"#4dffc3",flexShrink:0}}/>
+                  <span style={{fontSize:".66rem",color:"#4dffc3",fontFamily:"'Orbitron',sans-serif"}}>☁️ Sauvegardé</span></>}
+                {cloudStatus==="error"&&<><span style={{width:"8px",height:"8px",borderRadius:"50%",background:"#ff6b8a",flexShrink:0}}/>
+                  <span style={{fontSize:".66rem",color:"#ff6b8a",fontFamily:"'Orbitron',sans-serif"}}>Erreur sync</span></>}
+                {cloudStatus==="idle"&&user&&<><span style={{width:"8px",height:"8px",borderRadius:"50%",background:"#4dffc355",flexShrink:0}}/>
+                  <span style={{fontSize:".66rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>Cloud actif</span></>}
+              </div>
+            </div>}
+            {offline&&<div style={{marginBottom:"12px",padding:"8px 10px",background:"rgba(255,179,71,.1)",border:"1px solid #ffb34744",borderRadius:"8px"}}>
+              <div style={{fontSize:".76rem",color:"#ffb347",fontWeight:600}}>Mode hors ligne</div>
+              <div style={{fontSize:".68rem",color:TEXT2,marginTop:"2px",fontFamily:"'Exo 2',sans-serif",fontStyle:"italic"}}>Données sauvegardées localement</div>
+            </div>}
+            <button className="btn" onClick={handleLogout} style={{width:"100%",padding:"11px",background:"transparent",border:"1px solid #ff6b8a44",borderRadius:"9px",color:"#ff6b8a",fontFamily:"'Orbitron',sans-serif",fontSize:".68rem",fontWeight:700,cursor:"pointer"}}>
+              SE DÉCONNECTER
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* BUY CONFIRM */}
+      {buyConf&&(<div style={{position:"fixed",inset:0,zIndex:900,background:"rgba(8,12,24,.9)",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}} onClick={()=>setBuyConf(null)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:CARD,border:`2px solid ${RCAT[buyConf.cat]?.color||GOLD}`,borderRadius:"20px",padding:"26px 22px",maxWidth:"340px",width:"100%",textAlign:"center",animation:"popIn .25s ease"}}>
+          <div style={{fontSize:"3rem",marginBottom:"10px"}}>{buyConf.icon}</div>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".88rem",fontWeight:700,color:TEXT,marginBottom:"7px"}}>{buyConf.label}</div>
+          <div style={{fontSize:".84rem",color:TEXT2,fontStyle:"italic",marginBottom:"16px",fontFamily:"'Exo 2',sans-serif"}}>{buyConf.desc}</div>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.1rem",color:GOLD,fontWeight:900,marginBottom:"20px"}}>🪙 {buyConf.cost}</div>
+          <div style={{display:"flex",gap:"10px"}}>
+            <button className="btn" onClick={()=>setBuyConf(null)} style={{flex:1,padding:"12px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"10px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",fontWeight:700,cursor:"pointer"}}>ANNULER</button>
+            <button className="btn" onClick={()=>buyReward(buyConf)} style={{flex:2,padding:"12px",background:"linear-gradient(135deg,#1a2a10,#2a4a18)",border:"2px solid #4dffc3",borderRadius:"10px",color:"#4dffc3",fontFamily:"'Orbitron',sans-serif",fontSize:".74rem",fontWeight:900,cursor:"pointer"}}>✅ ACHETER</button>
+          </div>
+        </div>
+      </div>)}
+
+      {/* PLANNING CELL MODAL */}
+      {editCell&&(<div style={{position:"fixed",inset:0,zIndex:900,background:"rgba(8,12,24,.92)",display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={()=>setEditCell(null)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"20px 20px 0 0",padding:"22px 18px 30px",width:"100%",maxWidth:"520px",animation:"fadeUp .2s ease"}}>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".64rem",color:TEXT2,letterSpacing:".14em",marginBottom:"12px",textAlign:"center"}}>{DAYS_LABEL[editCell.d]} · {HOURS[editCell.h]}h00 – {HOURS[editCell.h]+1===24?0:HOURS[editCell.h]+1}h00</div>
+          <input value={cellTxt} onChange={e=>setCellTxt(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveCell()} autoFocus placeholder="Activité... (Maths, Sport, Repos, etc.)" style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"10px",padding:"12px 14px",color:TEXT,fontSize:"1rem",outline:"none",marginBottom:"12px"}}/>
+          <div style={{display:"flex",gap:"7px",marginBottom:"12px",flexWrap:"wrap"}}>
+            {SCHED_COLORS.map(c=><button key={c} onClick={()=>setCellCol(c)} style={{width:"32px",height:"32px",borderRadius:"50%",background:c,border:`3px solid ${cellCol===c?"white":CARD2}`,cursor:"pointer",boxShadow:cellCol===c?`0 0 10px ${c}`:"none",flexShrink:0}}/>)}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"15px",padding:"11px 14px",background:CARD2,borderRadius:"10px",border:`1px solid ${cellAlert?"#ffb34766":BORDER}`}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:".9rem",color:TEXT,fontWeight:600}}>🔔 Alerte à l'heure</div>
+              <div style={{fontSize:".7rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",marginTop:"2px"}}>Notification quand ce créneau commence</div>
+              {notifPerm!=="granted"&&<button className="btn" onClick={requestNotifPerm} style={{marginTop:"6px",padding:"4px 10px",background:"transparent",border:"1px solid #ffb34755",borderRadius:"6px",color:"#ffb347",fontSize:".58rem",fontFamily:"'Orbitron',sans-serif",cursor:"pointer"}}>ACTIVER LES NOTIFS</button>}
+            </div>
+            <div onClick={()=>setCellAlert(v=>!v)} style={{width:"46px",height:"26px",borderRadius:"13px",background:cellAlert?"#ffb347":"#2a3050",border:`2px solid ${cellAlert?"#ffb347":BORDER}`,cursor:"pointer",position:"relative",transition:"all .2s",flexShrink:0}}>
+              <div style={{position:"absolute",top:"2px",[cellAlert?"right":"left"]:"2px",width:"18px",height:"18px",borderRadius:"50%",background:"white",transition:"all .2s",boxShadow:"0 1px 4px rgba(0,0,0,.4)"}}/>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:"8px"}}>
+            <button className="btn" onClick={clearCell} style={{flex:1,padding:"10px",background:"transparent",border:"1px solid #ff6b8a44",borderRadius:"9px",color:"#ff6b8a",fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",cursor:"pointer",fontWeight:700}}>EFFACER</button>
+            <button className="btn" onClick={()=>setEditCell(null)} style={{flex:1,padding:"10px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",cursor:"pointer",fontWeight:700}}>ANNULER</button>
+            <button className="btn" onClick={saveCell} style={{flex:2,padding:"10px",background:"linear-gradient(135deg,#1a3050,#2a4070)",border:"1px solid #60b8ff",borderRadius:"9px",color:"#60b8ff",fontFamily:"'Orbitron',sans-serif",fontSize:".64rem",fontWeight:900,cursor:"pointer"}}>SAUVEGARDER</button>
+          </div>
+        </div>
+      </div>)}
+
+      {/* LEVEL UP */}
+      {lvlUp&&(<div style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(5,8,20,.96)",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",cursor:"pointer"}} onClick={()=>setLvlUp(null)}>
+        <div style={{position:"absolute",width:"300vmax",height:"300vmax",background:"conic-gradient(from 0deg,transparent 0deg,rgba(255,215,0,.04) 6deg,transparent 12deg,rgba(255,215,0,.04) 18deg,transparent 24deg,rgba(255,215,0,.04) 30deg,transparent 36deg,rgba(255,215,0,.04) 42deg,transparent 48deg,rgba(255,215,0,.04) 54deg,transparent 60deg,rgba(255,215,0,.04) 66deg,transparent 72deg,rgba(255,215,0,.04) 78deg,transparent 84deg,rgba(255,215,0,.04) 90deg,transparent 96deg,rgba(255,215,0,.04) 102deg,transparent 108deg,rgba(255,215,0,.04) 114deg,transparent 120deg,rgba(255,215,0,.04) 126deg,transparent 132deg,rgba(255,215,0,.04) 138deg,transparent 144deg,rgba(255,215,0,.04) 150deg,transparent 156deg,rgba(255,215,0,.04) 162deg,transparent 168deg,rgba(255,215,0,.04) 174deg,transparent 180deg,rgba(255,215,0,.04) 186deg,transparent 192deg,rgba(255,215,0,.04) 198deg,transparent 204deg,rgba(255,215,0,.04) 210deg,transparent 216deg,rgba(255,215,0,.04) 222deg,transparent 228deg,rgba(255,215,0,.04) 234deg,transparent 240deg,rgba(255,215,0,.04) 246deg,transparent 252deg,rgba(255,215,0,.04) 258deg,transparent 264deg,rgba(255,215,0,.04) 270deg,transparent 276deg,rgba(255,215,0,.04) 282deg,transparent 288deg,rgba(255,215,0,.04) 294deg,transparent 300deg,rgba(255,215,0,.04) 306deg,transparent 312deg,rgba(255,215,0,.04) 318deg,transparent 324deg,rgba(255,215,0,.04) 330deg,transparent 336deg,rgba(255,215,0,.04) 342deg,transparent 348deg,rgba(255,215,0,.04) 354deg,transparent 360deg)",animation:"lvlRay 12s linear infinite",pointerEvents:"none"}}/>
+        <div style={{textAlign:"center",position:"relative",zIndex:2,animation:"fadeInS .5s ease"}}>
+          <div style={{fontSize:"5rem",marginBottom:"14px",filter:"drop-shadow(0 0 50px gold)",animation:"idle 1.8s ease-in-out infinite"}}>⭐</div>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".78rem",color:"#ffd70066",letterSpacing:".38em",marginBottom:"10px"}}>NIVEAU SUPÉRIEUR</div>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(4rem,18vw,7rem)",fontWeight:900,color:GOLD,textShadow:`0 0 60px ${GOLD},0 0 120px ${GOLD}55`,lineHeight:1,marginBottom:"12px"}}>NIV.{lvlUp.lv}</div>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.1rem",color:TEXT,letterSpacing:".2em"}}>{lvlUp.title}</div>
+          <div style={{marginTop:"28px",fontSize:".76rem",color:TEXT2,fontStyle:"italic"}}>Touche pour continuer</div>
+        </div>
+      </div>)}
+
+      {/* HEADER */}
+      <div style={{background:`linear-gradient(180deg,${BG},${CARD})`,padding:"11px 16px 9px",position:"sticky",top:0,zIndex:100,backdropFilter:"blur(20px)",borderBottom:`1px solid ${BORDER}`}}>
+        <div style={{maxWidth:"520px",margin:"0 auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:"9px"}}>
+              {editN?(<input value={nVal} onChange={e=>setNVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveN()} onBlur={saveN} autoFocus style={{background:"transparent",border:"none",borderBottom:`1px solid ${GOLD}`,color:GOLD,fontFamily:"'Orbitron',sans-serif",fontSize:"1rem",fontWeight:900,outline:"none",width:"150px"}}/>)
+              :(<div onClick={()=>setEditN(true)} style={{fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(.9rem,3.5vw,1.1rem)",fontWeight:900,color:GOLD,cursor:"pointer",animation:"heroGlow 5s ease infinite"}}>{hero.name}</div>)}
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".52rem",color:TEXT2,letterSpacing:".1em"}}>{getT(lv)}</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:"9px"}}>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2}}>{p2(clock.getHours())}:{p2(clock.getMinutes())}:{p2(clock.getSeconds())}</div>
+              {cloudStatus==="saving"&&<span style={{fontSize:".7rem",animation:"cloudPulse 1s infinite"}}>☁️</span>}
+              {cloudStatus==="saved"&&<span style={{fontSize:".7rem",color:"#4dffc3"}}>☁️✓</span>}
+              <div style={{display:"flex",alignItems:"center",gap:"4px",background:CARD2,border:`1px solid ${GOLD}33`,borderRadius:"18px",padding:"3px 9px"}}>
+                <span style={{fontSize:".8rem"}}>🪙</span><span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",color:GOLD,fontWeight:700}}>{hero.coins||0}</span>
+              </div>
+              {hero.streak>1&&<div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".68rem",color:"#ff9944",fontWeight:700}}>🔥{hero.streak}</div>}
+              <div style={{textAlign:"right"}}>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.3rem",fontWeight:900,color:GOLD,lineHeight:1}}>{lv}</div>
+                <div style={{fontSize:".42rem",color:TEXT2,letterSpacing:".12em",fontFamily:"'Orbitron',sans-serif"}}>NIV</div>
+              </div>
+              {/* Account button */}
+              <button className="btn" onClick={()=>setShowLogout(v=>!v)} style={{width:"32px",height:"32px",borderRadius:"50%",background:CARD2,border:`1px solid ${BORDER}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1rem",cursor:"pointer",flexShrink:0}}>
+                {offline?"🔴":"🟢"}
+              </button>
+            </div>
+          </div>
+          <div style={{height:"9px",background:CARD2,borderRadius:"5px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+            <div style={{height:"100%",width:`${xpPct}%`,background:"linear-gradient(90deg,#3d60ff,#9030ff,#ffd700)",borderRadius:"5px",transition:"width .7s ease",position:"relative",overflow:"hidden"}}>
+              <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(255,255,255,.2),transparent)"}}/>
+            </div>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:"3px"}}>
+            <span style={{fontSize:".5rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>{getXPin(hero.xp)} XP</span>
+            <span style={{fontSize:".5rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>/{XPpLV} → NIV.{lv+1}</span>
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:"520px",margin:"0 auto",padding:"14px 14px 100px"}}>
+
+        {/* HUB */}
+        {scr==="hub"&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            <div style={{display:"flex",gap:"12px",marginBottom:"20px",alignItems:"center",background:CARD,border:`1px solid ${BORDER}`,borderRadius:"16px",padding:"14px"}}>
+              <CharBody av={avatar} lv={lv} size={88} animate={true}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"7px"}}>
+                  {[{v:hero.raids||0,l:"RAIDS",c:"#60b8ff"},{v:seenN,l:"VUS",c:GOLD},{v:mastN,l:"MAÎT.",c:"#4dffc3"},{v:hero.coins||0,l:"🪙",c:GOLD}].map(s=>(
+                    <div key={s.l} style={{background:CARD2,border:`1px solid ${s.c}22`,borderRadius:"9px",padding:"8px 6px",textAlign:"center"}}>
+                      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.1rem",fontWeight:900,color:s.c,lineHeight:1}}>{s.v}</div>
+                      <div style={{fontSize:".48rem",color:TEXT2,letterSpacing:".08em",marginTop:"3px",fontFamily:"'Orbitron',sans-serif"}}>{s.l}</div>
+                    </div>
+                  ))}
+                </div>
+                {!offline&&user&&<div style={{marginTop:"7px",padding:"5px 9px",background:CARD2,borderRadius:"7px",border:`1px solid ${GOLD}22`,display:"flex",alignItems:"center",gap:"6px"}}>
+                  <span style={{fontSize:".7rem"}}>☁️</span>
+                  <span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".5rem",color:`${GOLD}88`,letterSpacing:".1em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.email}</span>
+                </div>}
+                {offline&&<div style={{marginTop:"7px",padding:"5px 9px",background:CARD2,borderRadius:"7px",border:"1px solid #ffb34722",display:"flex",alignItems:"center",gap:"6px"}}>
+                  <span style={{fontSize:".7rem"}}>💾</span>
+                  <span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".5rem",color:"#ffb34788",letterSpacing:".1em"}}>MODE HORS LIGNE</span>
+                </div>}
+              </div>
+            </div>
+            {/* Dungeons */}
+            <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:TEXT2,letterSpacing:".2em",marginBottom:"10px"}}>⚔️ CHOISIR UN DONJON</div>
+            <div style={{display:"flex",flexDirection:"column",gap:"8px",marginBottom:"16px"}}>
+              {Object.entries(DUNGEONS).map(([name,dg])=>{
+                const dc=chaps[name],dm=dc.filter(c=>c.s===2).length,dv=dc.filter(c=>c.s>=1).length,isSel=selS===name;
+                return(
+                  <button key={name} className="dcard" onClick={()=>setSelS(isSel?null:name)} style={{width:"100%",padding:"12px 15px",textAlign:"left",background:isSel?`linear-gradient(145deg,${CARD2},${dg.glow.replace(".3",".18")})`:CARD,border:`1px solid ${isSel?dg.color:BORDER}`,borderRadius:"12px",boxShadow:isSel?`0 0 28px ${dg.color}20`:"none",transform:isSel?"translateY(-2px)":"none"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:"12px"}}>
+                      <div style={{fontSize:"2rem",flexShrink:0,filter:isSel?`drop-shadow(0 0 14px ${dg.color})`:"none",animation:isSel?"idle 2.5s ease-in-out infinite":"none"}}>{dg.boss.icon}</div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".78rem",fontWeight:700,color:isSel?dg.color:TEXT,letterSpacing:".1em",marginBottom:"5px"}}>{name.toUpperCase()}</div>
+                        <div style={{display:"flex",alignItems:"center",gap:"7px"}}>
+                          <div style={{flex:1,height:"5px",background:CARD2,borderRadius:"3px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+                            <div style={{height:"100%",width:`${(dv/dc.length)*100}%`,background:`linear-gradient(90deg,${dg.color}66,${dg.color})`,borderRadius:"3px",transition:"width .4s"}}/>
+                          </div>
+                          <span style={{fontSize:".58rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif",whiteSpace:"nowrap"}}>⭐{dm}/{dc.length}</span>
+                        </div>
+                      </div>
+                      {isSel&&<div style={{color:dg.color,fontSize:"1.1rem",flexShrink:0,animation:"idle 1.5s ease-in-out infinite"}}>▶</div>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {selS&&(
+              <div style={{background:CARD,border:`1px solid ${DUNGEONS[selS].color}44`,borderRadius:"14px",padding:"16px",marginBottom:"18px",animation:"popIn .3s ease"}}>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:TEXT2,letterSpacing:".18em",marginBottom:"10px"}}>⏱ DURÉE DU RAID</div>
+                <div style={{display:"flex",gap:"7px",marginBottom:"13px"}}>
+                  {DURS.map(d=><button key={d} className="btn" onClick={()=>setSelD(d)} style={{flex:1,padding:"11px 0",background:selD===d?`${DUNGEONS[selS].color}22`:CARD2,border:`1px solid ${selD===d?DUNGEONS[selS].color:BORDER}`,borderRadius:"10px",color:selD===d?DUNGEONS[selS].color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",fontWeight:700,cursor:"pointer",transition:"all .15s"}}>{DUR_LABEL[d]}</button>)}
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px",padding:"9px 12px",background:CARD2,borderRadius:"9px",border:`1px solid ${BORDER}`}}>
+                  <span style={{fontSize:".65rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>RÉCOMPENSES</span>
+                  <div><span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".88rem",color:GOLD,fontWeight:900}}>+{XPMAP[selD]} XP</span><span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",color:`${GOLD}88`,marginLeft:"7px"}}>+{Math.floor(XPMAP[selD]/2)} 🪙</span></div>
+                </div>
+                <button className="btn" onClick={startRaid} style={{width:"100%",padding:"16px",background:`linear-gradient(145deg,${CARD2},${DUNGEONS[selS].glow.replace(".3",".22")})`,border:`2px solid ${DUNGEONS[selS].color}`,borderRadius:"12px",color:DUNGEONS[selS].color,fontFamily:"'Orbitron',sans-serif",fontSize:"1rem",fontWeight:900,letterSpacing:".25em",cursor:"pointer",boxShadow:`0 0 36px ${DUNGEONS[selS].color}22`,position:"relative",overflow:"hidden"}}>
+                  <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(255,255,255,.06),transparent)"}}/>
+                  ⚔️ LANCER LE RAID
+                </button>
+              </div>
+            )}
+            {/* Quests */}
+            <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:TEXT2,letterSpacing:".2em",marginBottom:"10px"}}>📋 QUÊTES DU JOUR</div>
+            <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"13px",padding:"13px"}}>
+              <div style={{display:"flex",gap:"7px",marginBottom:"10px"}}>
+                <input value={qTxt} onChange={e=>setQTxt(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addQ()} placeholder="Mission précise et bornée dans le temps..." style={{flex:1,background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",padding:"10px 12px",color:TEXT,fontSize:".9rem",outline:"none"}}/>
+                <button className="btn" onClick={addQ} style={{padding:"10px 13px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",color:GOLD,fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>+ADD</button>
+              </div>
+              {quests.filter(q=>!q.done).length>0?(
+                <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+                  {quests.filter(q=>!q.done).map(q=>(
+                    <div key={q.id} className="crow" style={{display:"flex",alignItems:"center",gap:"9px",padding:"9px 11px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px"}}>
+                      <button className="btn" onClick={()=>doneQ(q.id)} style={{width:"20px",height:"20px",minWidth:"20px",borderRadius:"50%",border:"2px solid #60b8ff",background:"transparent",cursor:"pointer",flexShrink:0}} onMouseEnter={e=>e.currentTarget.style.background="#60b8ff33"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}/>
+                      <span style={{flex:1,fontSize:".9rem",color:TEXT,fontWeight:500}}>{q.text}</span>
+                      <span style={{fontSize:".58rem",color:`${GOLD}88`,fontFamily:"'Orbitron',sans-serif",flexShrink:0}}>+25XP</span>
+                      <button className="btn" onClick={()=>delQ(q.id)} style={{background:"transparent",border:"none",color:TEXT2,cursor:"pointer",fontSize:".82rem",padding:"0 4px",flexShrink:0}}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              ):<div style={{textAlign:"center",padding:"16px",color:TEXT2,fontSize:".86rem",fontStyle:"italic",fontFamily:"'Exo 2',sans-serif"}}>Définis ta première mission...</div>}
+              {quests.filter(q=>q.done).length>0&&(
+                <div style={{marginTop:"10px",paddingTop:"10px",borderTop:`1px solid ${BORDER}`}}>
+                  <div style={{fontSize:".56rem",color:"#4dffc355",fontFamily:"'Orbitron',sans-serif",letterSpacing:".1em",marginBottom:"5px"}}>✅ {quests.filter(q=>q.done).length} ACCOMPLIES</div>
+                  {quests.filter(q=>q.done).slice(0,4).map(q=>(
+                    <div key={q.id} style={{display:"flex",alignItems:"center",gap:"7px",padding:"3px 7px",opacity:.4}}>
+                      <span style={{color:"#4dffc3",fontSize:".66rem"}}>✓</span>
+                      <span style={{fontSize:".8rem",color:TEXT2,textDecoration:"line-through"}}>{q.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* AVATAR */}
+        {scr==="avatar"&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            <div style={{textAlign:"center",marginBottom:"15px",padding:"20px 14px 14px",background:CARD,border:`1px solid ${BORDER}`,borderRadius:"16px"}}>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:TEXT2,letterSpacing:".2em",marginBottom:"12px"}}>👤 TON PERSONNAGE</div>
+              <CharBody av={avatar} lv={lv} name={hero.name} size={162} animate={true}/>
+              <div style={{marginTop:"10px",fontSize:".72rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic"}}>🔒 = coûte des pièces · ✓ = équipé</div>
+            </div>
+            <div style={{display:"flex",gap:"5px",overflowX:"auto",paddingBottom:"8px",marginBottom:"12px",WebkitOverflowScrolling:"touch"}}>
+              {AV_CATS.map(cat=>(
+                <button key={cat.id} className="btn" onClick={()=>setAvCat(cat.id)} style={{flexShrink:0,padding:"7px 11px",background:avCat===cat.id?`linear-gradient(145deg,#2a3a60,#3a4a80)`:CARD,border:`1px solid ${avCat===cat.id?GOLD:BORDER}`,borderRadius:"18px",color:avCat===cat.id?GOLD:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".55rem",fontWeight:700,cursor:"pointer",letterSpacing:".06em",whiteSpace:"nowrap"}}>{cat.label}</button>
+              ))}
+            </div>
+            <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"13px",padding:"13px"}}>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:TEXT2,letterSpacing:".16em",marginBottom:"11px"}}>{AV_CATS.find(c=>c.id===avCat)?.label} — {ACAT[avCat]?.length} options</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:"9px"}}>
+                {ACAT[avCat]?.map(item=>{
+                  const isEq=avatar[avCat]===item.id,isOwned=owned.has(item.id);
+                  const isColor=(avCat==="skin"||avCat==="eyes"||avCat==="hairColor")&&item.color;
+                  const isGrad=avCat==="background"&&item.g,isFrame=avCat==="frame";
+                  const W=isColor?50:74,H=isColor?50:78;
+                  return(
+                    <button key={item.id} className="avitem" onClick={()=>equipAv(avCat,item)} style={{position:"relative",width:W,height:H,borderRadius:isColor?"50%":"11px",background:isColor?item.color:isGrad?`linear-gradient(145deg,${item.g[0]},${item.g[1]})`:isFrame?CARD2:CARD2,border:`${isEq?3:2}px solid ${isEq?GOLD:isOwned?BORDER:"#ff6b8a44"}`,boxShadow:isEq?`0 0 14px ${GOLD}66`:"none",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"3px",overflow:"hidden"}}>
+                      {!isColor&&item.emoji&&<span style={{fontSize:"1.8rem",lineHeight:1}}>{item.emoji}</span>}
+                      {isFrame&&<div style={{width:24,height:24,borderRadius:"50%",background:item.color,boxShadow:`0 0 10px ${item.color}`}}/>}
+                      {avCat==="hairStyle"&&!isColor&&item.id!=="hs0"&&<div style={{width:30,height:18,borderRadius:"30% 30% 8px 8px",background:(ACAT.hairColor.find(c=>c.id===(avatar.hairColor||"hc1"))||ACAT.hairColor[0]).color,marginBottom:2}}/>}
+                      {avCat==="mouth"&&<svg width="32" height="16" viewBox="0 0 32 16"><path d={item.id==="mc1"?"M3,9 Q16,16 29,9":item.id==="mc2"?"M2,7 Q16,18 30,7":item.id==="mc3"?"M8,9 Q16,15 24,9":item.id==="mc4"?"M5,9 L27,9":item.id==="mc5"?"M3,9 L8,14 L16,11 L24,14 L29,9":""} stroke="#a06040" strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      {isGrad&&item.stars&&<div style={{position:"absolute",inset:0,backgroundImage:"radial-gradient(circle,rgba(255,255,255,.8) 1px,transparent 1px)",backgroundSize:"10px 10px",opacity:.4}}/>}
+                      {!isColor&&<span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".44rem",color:isEq?GOLD:TEXT2,textAlign:"center",lineHeight:1.2,padding:"0 3px",zIndex:1}}>{item.label}</span>}
+                      {!isOwned&&<div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.64)",borderRadius:isColor?"50%":"9px",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"1px"}}>
+                        <span style={{fontSize:".9rem"}}>🔒</span><span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".44rem",color:"#ff6b8a"}}>🪙{item.cost}</span>
+                      </div>}
+                      {isEq&&<div style={{position:"absolute",top:2,right:2,width:"14px",height:"14px",background:GOLD,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:".46rem",fontWeight:900,zIndex:5}}>✓</div>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PLANNING + GOOGLE CALENDAR ICS MULTI-AGENDA */}
+        {scr==="planning"&&(()=>{
+          const icsMap=icsBySlot();
+          return(
+          <div style={{animation:"fadeUp .3s ease"}}>
+
+            {/* ── HEADER ── */}
+            <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"13px",padding:"13px 15px",marginBottom:"12px"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:"10px",marginBottom:"11px"}}>
+                <div>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".64rem",color:TEXT2,letterSpacing:".15em",marginBottom:"2px"}}>📅 PLANNING</div>
+                  <div style={{fontSize:".7rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic"}}>{getWeekLabel(icsWeekOff)}</div>
+                </div>
+                <div style={{display:"flex",gap:"7px",alignItems:"center",flexWrap:"wrap"}}>
+                  {/* Notif bell */}
+                  <div style={{display:"flex",alignItems:"center",gap:"4px",fontFamily:"'Orbitron',sans-serif",fontSize:".56rem",color:notifPerm==="granted"?"#4dffc3":"#ff6b8a"}}>
+                    <span style={{animation:notifPerm==="granted"?"bellRing 3s ease infinite":"none",display:"inline-block"}}>🔔</span>
+                    <span>{notifPerm==="granted"?"ON":"OFF"}</span>
+                  </div>
+                  {notifPerm!=="granted"&&<button className="btn" onClick={requestNotifPerm} style={{padding:"5px 10px",background:"transparent",border:"1px solid #ffb34755",borderRadius:"7px",color:"#ffb347",fontSize:".54rem",fontFamily:"'Orbitron',sans-serif",cursor:"pointer",fontWeight:700}}>NOTIFS</button>}
+                  {/* Sync button */}
+                  {icsConnected&&(
+                    icsLoading
+                      ?<span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".56rem",color:"#4dffc3",animation:"cloudPulse 1s infinite"}}>⏳ SYNC...</span>
+                      :<button className="btn" onClick={()=>fetchAllICS(icsLinks,icsWeekOff)} style={{padding:"5px 10px",background:"rgba(77,255,195,.1)",border:"1px solid #4dffc344",borderRadius:"7px",color:"#4dffc3",fontSize:".54rem",fontFamily:"'Orbitron',sans-serif",cursor:"pointer",fontWeight:700}}>🔄 SYNC</button>
+                  )}
+                  {/* Add agenda button */}
+                  <button className="btn" onClick={()=>setShowIcsGuide(true)} style={{padding:"6px 12px",background:"linear-gradient(135deg,#1a2a18,#2a3a28)",border:"1px solid #4dffc355",borderRadius:"8px",color:"#4dffc3",fontSize:".58rem",fontFamily:"'Orbitron',sans-serif",cursor:"pointer",fontWeight:700,display:"flex",alignItems:"center",gap:"5px"}}>
+                    <span>📅</span> {icsConnected?"+ AGENDA":"CONNECTER"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Connected agendas list */}
+              {icsConnected&&(
+                <div style={{display:"flex",gap:"6px",flexWrap:"wrap",marginBottom:"10px"}}>
+                  {icsLinks.map(link=>(
+                    <div key={link.id} style={{display:"flex",alignItems:"center",gap:"5px",padding:"4px 9px",background:`${link.color}18`,border:`1px solid ${link.color}44`,borderRadius:"20px"}}>
+                      <div style={{width:"8px",height:"8px",borderRadius:"50%",background:link.color,flexShrink:0}}/>
+                      <span style={{fontSize:".64rem",color:link.color,fontWeight:600,fontFamily:"'Orbitron',sans-serif",letterSpacing:".04em"}}>{link.label}</span>
+                      <button className="btn" onClick={()=>removeIcsLink(link.id)} style={{background:"transparent",border:"none",color:`${link.color}88`,cursor:"pointer",fontSize:".7rem",padding:"0 2px",lineHeight:1}}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Week navigation */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:"10px",borderTop:`1px solid ${BORDER}`}}>
+                <button className="btn" onClick={()=>setIcsWeekOff(w=>w-1)} style={{padding:"6px 14px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"8px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",cursor:"pointer",fontWeight:700}}>← PRÉC.</button>
+                <button className="btn" onClick={()=>setIcsWeekOff(0)} style={{padding:"6px 14px",background:icsWeekOff===0?`${GOLD}18`:CARD2,border:`1px solid ${icsWeekOff===0?GOLD:BORDER}`,borderRadius:"8px",color:icsWeekOff===0?GOLD:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",cursor:"pointer",fontWeight:700}}>AUJOURD'HUI</button>
+                <button className="btn" onClick={()=>setIcsWeekOff(w=>w+1)} style={{padding:"6px 14px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"8px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",cursor:"pointer",fontWeight:700}}>SUIV. →</button>
+              </div>
+            </div>
+
+            {/* ── GUIDE MODAL ICS ── */}
+            {showIcsGuide&&(
+              <div style={{position:"fixed",inset:0,zIndex:900,background:"rgba(8,12,24,.94)",display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={()=>{setShowIcsGuide(false);setIcsError("");}}>
+                <div onClick={e=>e.stopPropagation()} style={{background:CARD,border:`1px solid #4dffc344`,borderRadius:"20px 20px 0 0",padding:"22px 18px 34px",width:"100%",maxWidth:"520px",animation:"fadeUp .2s ease",maxHeight:"92vh",overflowY:"auto"}}>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",color:"#4dffc3",letterSpacing:".18em",marginBottom:"6px",textAlign:"center"}}>📅 AJOUTER UN AGENDA GOOGLE</div>
+                  <div style={{fontSize:".75rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic",textAlign:"center",marginBottom:"16px"}}>Tu peux connecter plusieurs agendas (principal, téléphone, cours...)</div>
+
+                  {/* HOW TO GET ICS LINK */}
+                  <div style={{background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"12px",padding:"14px",marginBottom:"14px"}}>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2,letterSpacing:".14em",marginBottom:"12px"}}>📋 COMMENT TROUVER TON LIEN ICS</div>
+                    {[
+                      {n:"1",t:"Ouvre calendar.google.com sur ordinateur",d:"Le téléphone ne permet pas d'accéder au lien ICS",icon:"💻"},
+                      {n:"2",t:"Clique sur ⚙️ Paramètres (en haut à droite)",d:"Puis 'Paramètres' dans le menu déroulant",icon:"⚙️"},
+                      {n:"3",t:"Dans la colonne gauche, clique sur un agenda",d:"Ex: 'paul.tramalloni@gmail.com' = ton agenda principal",icon:"📋"},
+                      {n:"4",t:"Fais défiler tout en bas de la page",d:"Section 'Intégrer l'agenda'",icon:"⬇️"},
+                      {n:"5",t:"Copie 'Adresse secrète au format iCal'",d:"Clique sur l'icône de copie à côté du lien",icon:"🔗"},
+                      {n:"6",t:"Répète pour chaque agenda souhaité",d:"Fais pareil pour 'Agenda téléphone', 'Cours', etc.",icon:"🔁"},
+                    ].map(s=>(
+                      <div key={s.n} style={{display:"flex",gap:"10px",padding:"8px 0",borderBottom:`1px solid ${BORDER}`,alignItems:"flex-start"}}>
+                        <div style={{width:"24px",height:"24px",minWidth:"24px",borderRadius:"50%",background:"rgba(77,255,195,.2)",border:"1px solid #4dffc355",display:"flex",alignItems:"center",justifyContent:"center",fontSize:".85rem"}}>{s.icon}</div>
+                        <div>
+                          <div style={{fontSize:".86rem",color:TEXT,fontWeight:600}}>{s.t}</div>
+                          <div style={{fontSize:".72rem",color:TEXT2,marginTop:"2px",fontFamily:"'Exo 2',sans-serif"}}>{s.d}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Privacy note */}
+                  <div style={{background:`${GOLD}0a`,border:`1px solid ${GOLD}33`,borderRadius:"10px",padding:"10px 13px",marginBottom:"14px"}}>
+                    <div style={{fontSize:".8rem",color:GOLD,fontWeight:600,marginBottom:"3px"}}>🔒 Tes liens sont privés</div>
+                    <div style={{fontSize:".72rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",lineHeight:1.6}}>Ces liens ICS restent dans ton navigateur uniquement. Ils ne sont jamais partagés avec personne, pas même avec tes membres de clan.</div>
+                  </div>
+
+                  {/* Divider */}
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",color:TEXT2,letterSpacing:".16em",marginBottom:"12px"}}>AJOUTER UN AGENDA</div>
+
+                  {/* Label */}
+                  <div style={{display:"flex",gap:"8px",marginBottom:"10px"}}>
+                    <input value={icsNewLabel} onChange={e=>setIcsNewLabel(e.target.value)} placeholder="Nom de l'agenda (ex: Principal, Cours...)" style={{flex:1,background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",padding:"10px 13px",color:TEXT,fontSize:".9rem",outline:"none"}}/>
+                  </div>
+
+                  {/* Color picker */}
+                  <div style={{display:"flex",gap:"7px",marginBottom:"10px",alignItems:"center"}}>
+                    <span style={{fontSize:".7rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif",letterSpacing:".08em",flexShrink:0}}>COULEUR :</span>
+                    {ICS_COLORS.map(c=>(
+                      <button key={c} onClick={()=>setIcsNewColor(c)} style={{width:"26px",height:"26px",borderRadius:"50%",background:c,border:`3px solid ${icsNewColor===c?"white":CARD2}`,cursor:"pointer",flexShrink:0,boxShadow:icsNewColor===c?`0 0 10px ${c}`:"none"}}/>
+                    ))}
+                  </div>
+
+                  {/* URL input */}
+                  <input
+                    value={icsNewUrl}
+                    onChange={e=>setIcsNewUrl(e.target.value)}
+                    placeholder="https://calendar.google.com/calendar/ical/..."
+                    style={{width:"100%",background:CARD2,border:`1px solid ${icsError?"#ff6b8a":BORDER}`,borderRadius:"9px",padding:"11px 13px",color:TEXT,fontSize:".82rem",outline:"none",marginBottom:"8px",wordBreak:"break-all"}}
+                  />
+                  {icsError&&<div style={{fontSize:".76rem",color:"#ff6b8a",marginBottom:"10px",fontFamily:"'Exo 2',sans-serif"}}>❌ {icsError}</div>}
+
+                  <div style={{display:"flex",gap:"8px"}}>
+                    <button className="btn" onClick={()=>{setShowIcsGuide(false);setIcsError("");}} style={{flex:1,padding:"12px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"10px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".66rem",fontWeight:700,cursor:"pointer"}}>ANNULER</button>
+                    <button className="btn" onClick={async()=>{await addIcsLink();if(!icsError)setShowIcsGuide(false);}} style={{flex:2,padding:"12px",background:"linear-gradient(135deg,#1a3028,#2a4838)",border:"2px solid #4dffc3",borderRadius:"10px",color:"#4dffc3",fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",fontWeight:900,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:"7px"}}>
+                      {icsLoading?<><span style={{width:"14px",height:"14px",border:"2px solid #4dffc355",borderTopColor:"#4dffc3",borderRadius:"50%",animation:"spin .7s linear infinite",display:"inline-block"}}/>VÉRIFICATION...</>:<>📅 CONNECTER</>}
+                    </button>
+                  </div>
+
+                  {/* Already connected agendas */}
+                  {icsLinks.length>0&&(
+                    <div style={{marginTop:"16px",paddingTop:"14px",borderTop:`1px solid ${BORDER}`}}>
+                      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2,letterSpacing:".14em",marginBottom:"10px"}}>AGENDAS CONNECTÉS</div>
+                      {icsLinks.map(link=>(
+                        <div key={link.id} style={{display:"flex",alignItems:"center",gap:"10px",padding:"9px 11px",background:CARD2,border:`1px solid ${link.color}33`,borderRadius:"9px",marginBottom:"6px"}}>
+                          <div style={{width:"10px",height:"10px",borderRadius:"50%",background:link.color,flexShrink:0}}/>
+                          <span style={{flex:1,fontSize:".86rem",color:TEXT,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{link.label}</span>
+                          <button className="btn" onClick={()=>removeIcsLink(link.id)} style={{padding:"4px 10px",background:"transparent",border:"1px solid #ff6b8a44",borderRadius:"6px",color:"#ff6b8a",fontSize:".6rem",fontFamily:"'Orbitron',sans-serif",cursor:"pointer",fontWeight:700,flexShrink:0}}>RETIRER</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── LEGEND ── */}
+            {icsConnected&&(
+              <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"10px",padding:"8px 13px",marginBottom:"10px",display:"flex",gap:"14px",alignItems:"center",flexWrap:"wrap"}}>
+                {icsLinks.map(link=>(
+                  <div key={link.id} style={{display:"flex",alignItems:"center",gap:"5px"}}>
+                    <div style={{width:"10px",height:"10px",borderRadius:"2px",background:link.color,flexShrink:0}}/>
+                    <span style={{fontSize:".62rem",color:TEXT2}}>{link.label}</span>
+                  </div>
+                ))}
+                <div style={{display:"flex",alignItems:"center",gap:"5px",marginLeft:"4px"}}>
+                  <div style={{width:"10px",height:"10px",borderRadius:"2px",background:"#60b8ff",flexShrink:0}}/>
+                  <span style={{fontSize:".62rem",color:TEXT2}}>Créneaux perso</span>
+                </div>
+                <span style={{fontSize:".58rem",color:TEXT2,marginLeft:"auto",fontFamily:"'Orbitron',sans-serif"}}>{icsEvents.length} events</span>
+              </div>
+            )}
+
+            {/* ── GRID ── */}
+            <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",borderRadius:"12px",border:`1px solid ${BORDER}`,background:CARD}}>
+              <div style={{minWidth:"460px"}}>
+                {/* Day headers with dates */}
+                <div style={{display:"flex",position:"sticky",top:0,zIndex:5,background:CARD,borderBottom:`2px solid ${BORDER}`}}>
+                  <div style={{width:"38px",flexShrink:0,borderRight:`1px solid ${BORDER}`}}/>
+                  {DAYS_LABEL.map((d,i)=>{
+                    const monday=getWeekMonday(icsWeekOff);
+                    const dayDate=new Date(monday);dayDate.setDate(monday.getDate()+i);
+                    const isToday=dayDate.toDateString()===new Date().toDateString();
+                    return(
+                      <div key={d} style={{flex:1,textAlign:"center",fontFamily:"'Orbitron',sans-serif",fontSize:".52rem",color:isToday?GOLD:i>=5?GOLD:TEXT2,letterSpacing:".04em",padding:"6px 2px",borderRight:i<6?`1px solid ${BORDER}`:"none",fontWeight:isToday||i>=5?700:400,background:isToday?`${GOLD}08`:"transparent"}}>
+                        {d}
+                        <div style={{fontSize:".48rem",opacity:.8,marginTop:"1px"}}>{dayDate.getDate()}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Hour rows */}
+                {HOURS.map((h,hi)=>{
+                  const isNoon=h===12,isEvn=h===18,isNowHour=icsWeekOff===0&&h===new Date().getHours();
+                  return(
+                    <div key={h} style={{display:"flex",minHeight:"38px",borderBottom:`1px solid ${BORDER}11`,background:isNowHour?`${GOLD}06`:isNoon?`${CARD2}55`:isEvn?`${CARD2}22`:"transparent",borderLeft:isNowHour?`2px solid ${GOLD}44`:"none"}}>
+                      <div style={{width:"38px",flexShrink:0,fontFamily:"'Orbitron',sans-serif",fontSize:".46rem",color:isNowHour?GOLD:TEXT2,padding:"8px 3px 0 2px",textAlign:"right",lineHeight:1,borderRight:`1px solid ${BORDER}`,fontWeight:isNowHour?700:400}}>{h}h</div>
+                      {DAYS_LABEL.map((_,di)=>{
+                        const k=`${di}-${hi}`;
+                        const cell=sched[k]||null;
+                        const icsCells=icsMap[k]||[];
+                        return(
+                          <div key={di} className="schedCell" onClick={()=>openCell(di,hi)} style={{flex:1,padding:"2px 2px",borderRight:di<6?`1px solid ${BORDER}11`:"none",minHeight:"38px",display:"flex",flexDirection:"column",gap:"1px",alignItems:"stretch"}}>
+                            {/* Custom créneau */}
+                            {cell&&(
+                              <div style={{flex:icsCells.length?0:1,background:`${cell.color}22`,border:`1px solid ${cell.color}55`,borderRadius:"3px",padding:"2px 4px",display:"flex",alignItems:"center",gap:"2px",overflow:"hidden",minHeight:"16px"}}>
+                                {cell.alert&&<span style={{fontSize:".46rem",flexShrink:0,animation:"bellRing 4s ease infinite",display:"inline-block"}}>🔔</span>}
+                                <span style={{fontSize:".5rem",color:cell.color,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.2,flex:1}}>{cell.text}</span>
+                              </div>
+                            )}
+                            {/* ICS events — each with its own agenda color */}
+                            {icsCells.map((ev,ei)=>(
+                              <div key={ev.uid||ei} style={{flex:1,background:`${ev._color||"#4dffc3"}18`,border:`1px solid ${ev._color||"#4dffc3"}44`,borderRadius:"3px",padding:"2px 4px",display:"flex",alignItems:"center",gap:"2px",overflow:"hidden",minHeight:"16px"}}>
+                                <span style={{fontSize:".46rem",flexShrink:0}}>📅</span>
+                                <span style={{fontSize:".5rem",color:ev._color||"#4dffc3",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.2,flex:1}}>{ev.summary}</span>
+                              </div>
+                            ))}
+                            {!cell&&icsCells.length===0&&<div style={{flex:1,borderRadius:"3px"}}/>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ── TODAY'S EVENTS ── */}
+            {icsConnected&&icsEvents.length>0&&(()=>{
+              const today=new Date();
+              const todayEvs=icsEvents.filter(ev=>{
+                const start=parseICSDate(ev.start);
+                return start&&start.toDateString()===today.toDateString();
+              }).sort((a,b)=>parseICSDate(a.start)-parseICSDate(b.start));
+              if(!todayEvs.length)return null;
+              return(
+                <div style={{marginTop:"11px",background:CARD,border:`1px solid #4dffc322`,borderRadius:"12px",padding:"12px 14px"}}>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:"#4dffc3",letterSpacing:".12em",marginBottom:"10px"}}>📅 AUJOURD'HUI — {todayEvs.length} événement{todayEvs.length>1?"s":""}</div>
+                  {todayEvs.map((ev,i)=>{
+                    const start=parseICSDate(ev.start),end=parseICSDate(ev.end);
+                    const fmt=d=>d?d.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}):"";
+                    const isNow=start&&end&&start<=today&&today<=end;
+                    const col=ev._color||"#4dffc3";
+                    return(
+                      <div key={ev.uid||i} style={{display:"flex",gap:"10px",padding:"8px 10px",background:isNow?`${col}12`:CARD2,border:`1px solid ${isNow?col+"55":BORDER}`,borderRadius:"9px",marginBottom:"6px",alignItems:"center"}}>
+                        {isNow&&<span style={{fontSize:".7rem",flexShrink:0}}>▶️</span>}
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"2px"}}>
+                            <div style={{width:"7px",height:"7px",borderRadius:"50%",background:col,flexShrink:0}}/>
+                            <span style={{fontSize:".88rem",color:isNow?col:TEXT,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ev.summary}</span>
+                          </div>
+                          <div style={{fontSize:".64rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif"}}>{ev._label}</div>
+                          {ev.location&&<div style={{fontSize:".66rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif"}}>📍 {ev.location}</div>}
+                        </div>
+                        <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".52rem",color:isNow?col:TEXT2,flexShrink:0,textAlign:"right"}}>
+                          {start&&start.getHours()!==0?<>{fmt(start)}<br/>{fmt(end)}</>:<span>Toute la journée</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
+            {/* ── NOT CONNECTED — invite ── */}
+            {!icsConnected&&(
+              <div style={{marginTop:"4px",background:CARD,border:"1px solid #4dffc322",borderRadius:"12px",padding:"18px",textAlign:"center"}}>
+                <div style={{fontSize:"2rem",marginBottom:"10px"}}>📅</div>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",color:"#4dffc3",letterSpacing:".14em",marginBottom:"8px"}}>GOOGLE CALENDAR NON CONNECTÉ</div>
+                <div style={{fontSize:".82rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",lineHeight:1.7,marginBottom:"14px"}}>Connecte ton Google Agenda pour voir tous tes événements directement dans ce planning. Fonctionne avec l'appli téléphone aussi.</div>
+                <button className="btn" onClick={()=>setShowIcsGuide(true)} style={{padding:"13px 28px",background:"linear-gradient(135deg,#1a3028,#2a4838)",border:"2px solid #4dffc3",borderRadius:"11px",color:"#4dffc3",fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",fontWeight:900,cursor:"pointer",letterSpacing:".14em"}}>
+                  📅 CONNECTER MON AGENDA
+                </button>
+              </div>
+            )}
+
+            {/* ── COLORS LEGEND ── */}
+            <div style={{marginTop:"11px",background:CARD,border:`1px solid ${BORDER}`,borderRadius:"11px",padding:"10px 13px"}}>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".56rem",color:TEXT2,letterSpacing:".13em",marginBottom:"7px"}}>COULEURS CRÉNEAUX PERSO</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:"8px"}}>
+                {[{l:"Maths",c:"#ff6b8a"},{l:"Physique",c:"#60b8ff"},{l:"SI",c:"#4dffc3"},{l:"Chimie",c:"#ffb347"},{l:"Info",c:"#c084fc"},{l:"Sport",c:"#90ee90"},{l:"Repos",c:"#ffd700"},{l:"Perso",c:"#ffffff"}].map(x=>(
+                  <div key={x.l} style={{display:"flex",alignItems:"center",gap:"5px"}}>
+                    <div style={{width:"10px",height:"10px",borderRadius:"50%",background:x.c,flexShrink:0}}/>
+                    <span style={{fontSize:".66rem",color:TEXT2}}>{x.l}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          );
+        })()}
+
+        {/* CLAN */}
+        {scr==="clan"&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            {!clan&&(
+              <div>
+                <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"14px",padding:"18px",marginBottom:"14px",textAlign:"center"}}>
+                  <div style={{fontSize:"2.8rem",marginBottom:"10px"}}>⚔️</div>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".9rem",color:GOLD,fontWeight:900,letterSpacing:".15em",marginBottom:"8px"}}>CLAN PTSI</div>
+                  <div style={{fontSize:".82rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic",lineHeight:1.6,marginBottom:"10px"}}>Rejoins ou crée un clan pour progresser avec tes amis.</div>
+                  <div style={{padding:"10px",background:`#4dffc311`,border:"1px solid #4dffc333",borderRadius:"9px",fontSize:".76rem",color:"#4dffc3",lineHeight:1.6}}>
+                    💡 <strong>Sur le même ordi :</strong> chaque onglet = un joueur différent.<br/>
+                    🌐 <strong>Online :</strong> dépose le fichier sur Netlify et partage le lien.
+                  </div>
+                </div>
+                <div style={{background:CARD,border:`1px solid ${GOLD}33`,borderRadius:"13px",padding:"16px",marginBottom:"11px"}}>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".64rem",color:GOLD,letterSpacing:".18em",marginBottom:"11px"}}>🏰 CRÉER UN CLAN</div>
+                  <input value={clanName} onChange={e=>setClanName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&createClan()} placeholder="Nom du clan..." style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",padding:"11px 13px",color:TEXT,fontSize:"1rem",outline:"none",marginBottom:"10px"}}/>
+                  <button className="btn" onClick={createClan} style={{width:"100%",padding:"13px",background:`linear-gradient(145deg,#2a2010,#3a3018)`,border:`2px solid ${GOLD}`,borderRadius:"10px",color:GOLD,fontFamily:"'Orbitron',sans-serif",fontSize:".8rem",fontWeight:900,cursor:"pointer",letterSpacing:".18em"}}>✦ FONDER LE CLAN</button>
+                </div>
+                <div style={{background:CARD,border:"1px solid #4dffc333",borderRadius:"13px",padding:"16px"}}>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".64rem",color:"#4dffc3",letterSpacing:".18em",marginBottom:"11px"}}>🔑 REJOINDRE</div>
+                  <input value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase())} onKeyDown={e=>e.key==="Enter"&&joinClan()} placeholder="Code du clan (ex: ABC123)..." style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",padding:"11px 13px",color:TEXT,fontSize:"1rem",outline:"none",marginBottom:"10px",letterSpacing:".15em"}}/>
+                  <button className="btn" onClick={joinClan} style={{width:"100%",padding:"13px",background:"linear-gradient(145deg,#0a2018,#183028)",border:"2px solid #4dffc3",borderRadius:"10px",color:"#4dffc3",fontFamily:"'Orbitron',sans-serif",fontSize:".8rem",fontWeight:900,cursor:"pointer",letterSpacing:".18em"}}>➜ REJOINDRE</button>
+                </div>
+              </div>
+            )}
+            {clan&&clanData&&(
+              <div>
+                <div style={{background:`linear-gradient(145deg,${CARD},#2a2010)`,border:`2px solid ${GOLD}44`,borderRadius:"15px",padding:"16px",marginBottom:"13px",textAlign:"center",position:"relative",overflow:"hidden"}}>
+                  <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse at 50% 100%,${GOLD}08,transparent 60%)`,pointerEvents:"none"}}/>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(1rem,5vw,1.5rem)",fontWeight:900,color:GOLD,letterSpacing:".15em",textShadow:`0 0 28px ${GOLD}55`,marginBottom:"5px"}}>⚔️ {clanData.name}</div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"12px",marginBottom:"8px"}}>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2,background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"7px",padding:"4px 10px"}}>CODE : {clan.code}</div>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:"#4dffc3"}}>{clanData.members.length} membre{clanData.members.length>1?"s":""}</div>
+                  </div>
+                  <div style={{display:"flex",justifyContent:"center",gap:"7px"}}>
+                    <button className="btn" onClick={refreshClan} style={{padding:"5px 11px",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"7px",color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".54rem",cursor:"pointer",fontWeight:700}}>🔄 REFRESH</button>
+                    <button className="btn" onClick={leaveClan} style={{padding:"5px 11px",background:"transparent",border:"1px solid #ff6b8a44",borderRadius:"7px",color:"#ff6b8a",fontFamily:"'Orbitron',sans-serif",fontSize:".54rem",cursor:"pointer",fontWeight:700}}>QUITTER</button>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:"5px",marginBottom:"12px"}}>
+                  {[{id:"members",l:"👥 Membres"},{id:"ranking",l:"🏆 Classement"},{id:"chat",l:"💬 Chat"},{id:"challenges",l:"⚔️ Défis"}].map(t=>(
+                    <button key={t.id} className="btn" onClick={()=>setClanTab(t.id)} style={{flex:1,padding:"9px 2px",background:clanTab===t.id?`linear-gradient(145deg,#2a3a60,#3a4a80)`:CARD,border:`1px solid ${clanTab===t.id?GOLD:BORDER}`,borderRadius:"9px",color:clanTab===t.id?GOLD:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".5rem",fontWeight:700,cursor:"pointer",letterSpacing:".04em"}}>{t.l}</button>
+                  ))}
+                </div>
+                {clanTab==="members"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+                    {[...clanData.members].sort((a,b)=>(b.xp||0)-(a.xp||0)).map((m,idx)=>{
+                      const mLv=getLv(m.xp||0),isMe=m.id===sg("r6uid","");
+                      const wkMin=m.workMinutes||0;const wkH=Math.floor(wkMin/60),wkM=wkMin%60;
+                      return(
+                        <div key={m.id} style={{background:isMe?`linear-gradient(145deg,${CARD},#1a2a10)`:CARD,border:`1px solid ${isMe?GOLD+"44":BORDER}`,borderRadius:"13px",padding:"12px",display:"flex",alignItems:"center",gap:"10px"}}>
+                          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.1rem",fontWeight:900,color:idx===0?"#ffd700":idx===1?"#c0c8d8":idx===2?"#c08040":TEXT2,minWidth:"22px",textAlign:"center"}}>{idx+1}</div>
+                          {m.avatar?<CharBody av={m.avatar} lv={mLv} size={54} animate={false}/>:<div style={{width:54,height:54,background:CARD2,borderRadius:"8px",border:`1px solid ${BORDER}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.3rem"}}>👤</div>}
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{display:"flex",alignItems:"center",gap:"7px",marginBottom:"2px",flexWrap:"wrap"}}>
+                              <span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".75rem",fontWeight:700,color:isMe?GOLD:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name}</span>
+                              {isMe&&<span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".48rem",color:GOLD,background:`${GOLD}22`,border:`1px solid ${GOLD}44`,borderRadius:"10px",padding:"2px 6px"}}>MOI</span>}
+                              {m.role==="leader"&&<span style={{fontSize:".6rem"}}>👑</span>}
+                            </div>
+                            <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
+                              <span style={{fontSize:".64rem",color:TEXT2}}>NIV.{mLv}</span>
+                              <span style={{fontSize:".64rem",color:GOLD}}>⚡{m.xp||0}xp</span>
+                              <span style={{fontSize:".64rem",color:"#60b8ff"}}>⚔️{m.raids||0}</span>
+                              <span style={{fontSize:".64rem",color:"#c084fc"}}>⏱{wkH}h{String(wkM).padStart(2,"0")}</span>
+                            </div>
+                            <div style={{marginTop:"4px",height:"5px",background:CARD2,borderRadius:"3px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+                              <div style={{height:"100%",width:`${getPct(m.xp||0)}%`,background:`linear-gradient(90deg,#3d60ff,#9030ff,${GOLD})`,borderRadius:"3px"}}/>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"11px",padding:"12px",textAlign:"center"}}>
+                      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".56rem",color:TEXT2,letterSpacing:".1em",marginBottom:"4px"}}>CODE À PARTAGER</div>
+                      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.4rem",fontWeight:900,color:GOLD,letterSpacing:".3em"}}>{clan.code}</div>
+                    </div>
+                  </div>
+                )}
+                {clanTab==="ranking"&&(()=>{
+                  const RANKS=[
+                    {id:"time",label:"⏱ Temps de travail",icon:"⏱",color:"#c084fc",key:"workMinutes",fmt:v=>{const h=Math.floor(v/60),m=v%60;return`${h}h${String(m).padStart(2,"0")}`;},desc:"Total de minutes de travail accumulées"},
+                    {id:"xp",label:"⚡ XP Total",icon:"⚡",color:GOLD,key:"xp",fmt:v=>`${v||0} XP`,desc:"Points d'expérience gagnés"},
+                    {id:"raids",label:"⚔️ Raids effectués",icon:"⚔️",color:"#60b8ff",key:"raids",fmt:v=>`${v||0} raids`,desc:"Nombre de sessions de travail terminées"},
+                    {id:"mastN",label:"⭐ Chapitres maîtrisés",icon:"⭐",color:"#4dffc3",key:"mastN",fmt:v=>`${v||0} chap.`,desc:"Chapitres au statut maîtrisé"},
+                    {id:"streak",label:"🔥 Streak actuel",icon:"🔥",color:"#ff9944",key:"streak",fmt:v=>`${v||0} j.`,desc:"Jours consécutifs d'activité"},
+                  ];
+                  const cat=RANKS.find(r=>r.id===rankCat)||RANKS[0];
+                  const sorted=[...clanData.members].sort((a,b)=>(b[cat.key]||0)-(a[cat.key]||0));
+                  const myId=sg("r6uid","");
+                  const myRank=sorted.findIndex(m=>m.id===myId)+1;
+                  return(
+                    <div>
+                      <div style={{display:"flex",gap:"5px",marginBottom:"12px",overflowX:"auto",WebkitOverflowScrolling:"touch",paddingBottom:"4px"}}>
+                        {RANKS.map(r=>(
+                          <button key={r.id} className="btn" onClick={()=>setRankCat(r.id)} style={{flexShrink:0,padding:"7px 10px",background:rankCat===r.id?`${r.color}22`:CARD2,border:`1px solid ${rankCat===r.id?r.color:BORDER}`,borderRadius:"18px",color:rankCat===r.id?r.color:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".52rem",fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>{r.icon} {r.label.split(" ").slice(1).join(" ")}</button>
+                        ))}
+                      </div>
+                      <div style={{background:CARD2,border:`1px solid ${cat.color}33`,borderRadius:"11px",padding:"10px 14px",marginBottom:"10px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div>
+                          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:cat.color,letterSpacing:".12em",fontWeight:700}}>{cat.label}</div>
+                          <div style={{fontSize:".72rem",color:TEXT2,fontFamily:"'Exo 2',sans-serif",fontStyle:"italic",marginTop:"2px"}}>{cat.desc}</div>
+                        </div>
+                        {myRank>0&&<div style={{textAlign:"center",background:`${cat.color}18`,border:`1px solid ${cat.color}44`,borderRadius:"10px",padding:"6px 12px",flexShrink:0}}>
+                          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.2rem",fontWeight:900,color:cat.color,lineHeight:1}}>#{myRank}</div>
+                          <div style={{fontSize:".44rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif",letterSpacing:".1em"}}>MA PLACE</div>
+                        </div>}
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:"7px"}}>
+                        {sorted.map((m,idx)=>{
+                          const isMe=m.id===myId;
+                          const val=cat.fmt(m[cat.key]||0);
+                          const maxVal=Math.max(...sorted.map(x=>x[cat.key]||0),1);
+                          const pct=((m[cat.key]||0)/maxVal)*100;
+                          const medal=idx===0?"🥇":idx===1?"🥈":idx===2?"🥉":null;
+                          return(
+                            <div key={m.id} style={{background:isMe?`linear-gradient(145deg,${CARD},${cat.color}11)`:CARD,border:`1px solid ${isMe?cat.color+"66":BORDER}`,borderRadius:"12px",padding:"11px 13px"}}>
+                              <div style={{display:"flex",alignItems:"center",gap:"9px",marginBottom:"6px"}}>
+                                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".9rem",fontWeight:900,color:idx===0?"#ffd700":idx===1?"#c0c8d8":idx===2?"#c08040":TEXT2,minWidth:"20px",textAlign:"center"}}>{medal||`#${idx+1}`}</div>
+                                {m.avatar?<CharBody av={m.avatar} lv={getLv(m.xp||0)} size={38} animate={false}/>:<div style={{width:38,height:38,background:CARD2,borderRadius:"6px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1rem"}}>👤</div>}
+                                <div style={{flex:1,minWidth:0}}>
+                                  <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                                    <span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".72rem",fontWeight:700,color:isMe?cat.color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name}</span>
+                                    {isMe&&<span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".44rem",color:cat.color,background:`${cat.color}22`,border:`1px solid ${cat.color}44`,borderRadius:"10px",padding:"1px 5px"}}>MOI</span>}
+                                    {m.role==="leader"&&<span style={{fontSize:".54rem"}}>👑</span>}
+                                  </div>
+                                </div>
+                                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".78rem",fontWeight:900,color:cat.color,flexShrink:0}}>{val}</div>
+                              </div>
+                              <div style={{height:"4px",background:CARD2,borderRadius:"2px",overflow:"hidden",border:`1px solid ${cat.color}22`}}>
+                                <div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${cat.color}66,${cat.color})`,borderRadius:"2px",transition:"width .5s",boxShadow:isMe?`0 0 6px ${cat.color}88`:"none"}}/>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {clanTab==="chat"&&(
+                  <div>
+                    <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"12px",padding:"11px",marginBottom:"9px",minHeight:"260px",maxHeight:"360px",overflowY:"auto",display:"flex",flexDirection:"column",gap:"7px"}}>
+                      {clanData.chat.length===0&&<div style={{textAlign:"center",padding:"36px 20px",color:TEXT2,fontStyle:"italic",fontFamily:"'Exo 2',sans-serif"}}>Aucun message...</div>}
+                      {[...clanData.chat].map(msg=>{
+                        const isMe=msg.uid===sg("r6uid","");
+                        return(
+                          <div key={msg.id} style={{display:"flex",flexDirection:isMe?"row-reverse":"row",alignItems:"flex-end",gap:"7px"}}>
+                            <div style={{maxWidth:"78%"}}>
+                              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".48rem",color:TEXT2,marginBottom:"2px",textAlign:isMe?"right":"left"}}>{msg.name} · {msg.time}</div>
+                              <div style={{padding:"8px 11px",borderRadius:isMe?"13px 13px 4px 13px":"13px 13px 13px 4px",background:isMe?`linear-gradient(135deg,#2a3a60,#3a4a80)`:CARD2,border:`1px solid ${isMe?GOLD+"33":BORDER}`,fontSize:".86rem",color:TEXT,lineHeight:1.5}}>{msg.text}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{display:"flex",gap:"7px"}}>
+                      <input value={chatTxt} onChange={e=>setChatTxt(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendChat()} placeholder="Message au clan..." style={{flex:1,background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",padding:"10px 12px",color:TEXT,fontSize:".9rem",outline:"none"}}/>
+                      <button className="btn" onClick={sendChat} style={{padding:"10px 14px",background:`linear-gradient(135deg,#2a3060,#3a4080)`,border:`1px solid ${GOLD}44`,borderRadius:"9px",color:GOLD,fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>ENVOYER</button>
+                    </div>
+                  </div>
+                )}
+                {clanTab==="challenges"&&(
+                  <div>
+                    {(clanData.challenges||[]).map(ch=>(
+                      <div key={ch.id} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"12px",padding:"14px",marginBottom:"8px"}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"9px",flexWrap:"wrap",gap:"7px"}}>
+                          <div style={{fontSize:".94rem",color:TEXT,fontWeight:600,flex:1}}>{ch.text}</div>
+                          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",color:GOLD,fontWeight:700,flexShrink:0}}>🪙 {ch.reward}</div>
+                        </div>
+                        <div style={{display:"flex",gap:"7px",flexWrap:"wrap"}}>
+                          {clanData.members.map(m=>{
+                            const prog=(ch.progress||{})[m.id]||false;
+                            return(
+                              <div key={m.id} style={{display:"flex",alignItems:"center",gap:"4px",padding:"3px 7px",background:prog?"#1a2a10":CARD2,border:`1px solid ${prog?"#4dffc355":BORDER}`,borderRadius:"18px"}}>
+                                <span style={{fontSize:".68rem",color:prog?"#4dffc3":TEXT2}}>{prog?"✅":"⏳"}</span>
+                                <span style={{fontSize:".66rem",color:prog?"#4dffc3":TEXT2,fontFamily:"'Orbitron',sans-serif"}}>{m.name}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* BOUTIQUE */}
+        {scr==="shop"&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            <div style={{background:`linear-gradient(145deg,${CARD},#2a2010)`,border:`2px solid ${GOLD}44`,borderRadius:"15px",padding:"14px",marginBottom:"12px",textAlign:"center",position:"relative",overflow:"hidden"}}>
+              <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse at 50% 100%,${GOLD}08,transparent 60%)`,pointerEvents:"none"}}/>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:`${GOLD}88`,letterSpacing:".2em",marginBottom:"4px"}}>TON SOLDE</div>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"2.4rem",fontWeight:900,color:GOLD,lineHeight:1}}>🪙 {hero.coins||0}</div>
+              <div style={{fontSize:".72rem",color:TEXT2,marginTop:"5px",fontFamily:"'Exo 2',sans-serif",fontStyle:"italic"}}>Chaque XP gagné = ½ pièce</div>
+            </div>
+            <div style={{display:"flex",gap:"5px",marginBottom:"12px"}}>
+              {[{id:"rewards",l:"🎁 Récompenses"},{id:"cosmetics",l:"👗 Cosmétiques"}].map(t=>(
+                <button key={t.id} className="btn" onClick={()=>setShopTab(t.id)} style={{flex:1,padding:"10px",background:shopTab===t.id?`linear-gradient(145deg,#2a3a60,#3a4a80)`:CARD,border:`1px solid ${shopTab===t.id?GOLD:BORDER}`,borderRadius:"10px",color:shopTab===t.id?GOLD:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".62rem",fontWeight:700,cursor:"pointer"}}>{t.l}</button>
+              ))}
+            </div>
+            {shopTab==="rewards"&&REWARDS.map(item=>{
+              const canBuy=hero.coins>=item.cost,cc=RCAT[item.cat]?.color||GOLD;
+              return(
+                <button key={item.id} className="dcard" onClick={()=>canBuy?setBuyConf(item):notify(`Il manque ${item.cost-hero.coins} 🪙`,"#ff6b8a")} style={{width:"100%",textAlign:"left",padding:"12px",background:canBuy?CARD:`${CARD}aa`,border:`1px solid ${canBuy?cc+"44":BORDER}`,borderRadius:"12px",marginBottom:"7px",opacity:canBuy?1:.6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"11px"}}>
+                    <div style={{fontSize:"1.8rem",flexShrink:0,filter:canBuy?`drop-shadow(0 0 10px ${cc})`:"none"}}>{item.icon}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:".92rem",fontWeight:700,color:canBuy?TEXT:TEXT2,marginBottom:"2px"}}>{item.label}</div>
+                      <div style={{fontSize:".76rem",color:TEXT2,fontStyle:"italic",fontFamily:"'Exo 2',sans-serif"}}>{item.desc}</div>
+                    </div>
+                    <div style={{textAlign:"right",flexShrink:0}}>
+                      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".88rem",fontWeight:900,color:canBuy?GOLD:TEXT2}}>🪙{item.cost}</div>
+                      <div style={{fontSize:".54rem",fontFamily:"'Orbitron',sans-serif",marginTop:"2px",color:canBuy?"#4dffc3":"#ff6b8a"}}>{canBuy?"DISPO":"INSUFFISANT"}</div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+            {shopTab==="cosmetics"&&AV_CATS.map(cat=>{
+              const locked=(ACAT[cat.id]||[]).filter(x=>x.cost>0&&!owned.has(x.id));
+              if(!locked.length)return null;
+              return(
+                <div key={cat.id} style={{marginBottom:"14px"}}>
+                  <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".56rem",color:TEXT2,letterSpacing:".14em",marginBottom:"8px"}}>{cat.label}</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:"8px"}}>
+                    {locked.map(item=>{
+                      const canBuy=hero.coins>=item.cost;
+                      return(
+                        <button key={item.id} className="avitem" onClick={()=>{if(canBuy)equipAv(cat.id,item);else notify(`Il manque ${item.cost-hero.coins} 🪙`,"#ff6b8a");}} style={{width:"80px",padding:"9px 5px",borderRadius:"11px",background:canBuy?CARD:CARD2,border:`1px solid ${canBuy?GOLD+"44":BORDER}`,display:"flex",flexDirection:"column",alignItems:"center",gap:"4px",opacity:canBuy?1:.6}}>
+                          <div style={{fontSize:item.emoji?"1.7rem":"0"}}>{item.emoji||""}</div>
+                          {item.color&&<div style={{width:"22px",height:"22px",borderRadius:"50%",background:item.color,border:"2px solid rgba(255,255,255,.2)"}}/>}
+                          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".44rem",color:canBuy?TEXT:TEXT2,textAlign:"center",lineHeight:1.2}}>{item.label}</div>
+                          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".52rem",color:canBuy?GOLD:"#ff6b8a",fontWeight:700}}>🪙{item.cost}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* MONDE */}
+        {scr==="world"&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"12px",padding:"10px 14px",marginBottom:"13px",textAlign:"center"}}>
+              <span style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2,letterSpacing:".09em"}}>CLIQUE → 🔒 Non vu → 👁️ Vu <span style={{color:GOLD}}>+10XP</span> → ⭐ Maîtrisé <span style={{color:GOLD}}>+30XP</span></span>
+            </div>
+            {Object.entries(chaps).map(([subj,cs])=>{
+              const dg=DUNGEONS[subj],sm=cs.filter(c=>c.s===2).length,sv=cs.filter(c=>c.s>=1).length,pct=Math.round((sv/cs.length)*100);
+              return(
+                <div key={subj} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"13px",padding:"13px",marginBottom:"9px"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"10px",flexWrap:"wrap",gap:"7px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:"9px"}}>
+                      <span style={{fontSize:"1.5rem",filter:`drop-shadow(0 0 10px ${dg.color})`}}>{dg.boss.icon}</span>
+                      <div>
+                        <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".76rem",fontWeight:700,color:dg.color,letterSpacing:".1em"}}>{subj.toUpperCase()}</div>
+                        <div style={{fontSize:".6rem",color:TEXT2,marginTop:"1px"}}>⭐ {sm}/{cs.length} maîtrisés</div>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:"7px"}}>
+                      <div style={{width:"58px",height:"5px",background:CARD2,borderRadius:"3px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+                        <div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${dg.color}66,${dg.color})`,borderRadius:"3px",transition:"width .4s"}}/>
+                      </div>
+                      <span style={{fontSize:".6rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>{pct}%</span>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:"5px"}}>
+                    {cs.map((c,i)=>(
+                      <div key={c.name} className="crow" onClick={()=>cycleC(subj,i)} style={{display:"flex",alignItems:"center",gap:"9px",padding:"9px 12px",borderRadius:"8px",background:c.s===2?`${dg.color}11`:CARD2,border:`1px solid ${c.s===2?dg.color+"55":c.s===1?dg.color+"22":BORDER}`}}>
+                        <span style={{fontSize:"1rem",flexShrink:0}}>{c.s===2?"⭐":c.s===1?"👁️":"🔒"}</span>
+                        <span style={{flex:1,fontSize:".9rem",color:c.s===2?dg.color:c.s===1?TEXT:TEXT2,fontWeight:c.s===2?700:c.s===1?500:400,fontStyle:c.s===0?"italic":"normal"}}>{c.name}</span>
+                        <span style={{fontSize:".58rem",color:c.s===2?dg.color:TEXT2,fontFamily:"'Orbitron',sans-serif",flexShrink:0,opacity:c.s===0?.35:1}}>{["NON VU","VU","MAÎTRISÉ"][c.s]}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* HÉROS */}
+        {scr==="hero"&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            <div style={{textAlign:"center",padding:"24px 18px 20px",background:`linear-gradient(180deg,${CARD2},${CARD})`,border:`1px solid ${BORDER}`,borderRadius:"15px",marginBottom:"12px",position:"relative",overflow:"hidden"}}>
+              <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse at 50% 100%,${GOLD}08,transparent 58%)`,pointerEvents:"none"}}/>
+              <CharBody av={avatar} lv={lv} name={hero.name} size={148} animate={true}/>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"clamp(2rem,10vw,3.5rem)",fontWeight:900,color:GOLD,lineHeight:1,textShadow:`0 0 40px ${GOLD}`,marginTop:"12px"}}>{lv}</div>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".86rem",color:TEXT,letterSpacing:".2em",marginTop:"5px",marginBottom:"16px"}}>{getT(lv)}</div>
+              <div style={{maxWidth:"260px",margin:"0 auto"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:"4px"}}>
+                  <span style={{fontSize:".54rem",color:TEXT2,fontFamily:"'Orbitron',sans-serif"}}>VERS NIV. {lv+1}</span>
+                  <span style={{fontSize:".54rem",color:`${GOLD}77`,fontFamily:"'Orbitron',sans-serif"}}>{getXPin(hero.xp)}/{XPpLV}</span>
+                </div>
+                <div style={{height:"11px",background:CARD2,borderRadius:"6px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+                  <div style={{height:"100%",width:`${xpPct}%`,background:"linear-gradient(90deg,#3d60ff,#9030ff,#ffd700)",borderRadius:"6px",boxShadow:`0 0 12px ${GOLD}44`}}/>
+                </div>
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"7px",marginBottom:"12px"}}>
+              {(()=>{
+                const wl=hero.workLog||{};
+                const totalMin=Object.values(wl).reduce((a,b)=>a+b,0);
+                const totalH=Math.floor(totalMin/60),totalM=totalMin%60;
+                const today=new Date().toISOString().split("T")[0];
+                const todayMin=wl[today]||0;
+                const todayH=Math.floor(todayMin/60),todayM=todayMin%60;
+                return [{v:hero.xp,l:"XP TOTAL",c:GOLD},{v:hero.raids||0,l:"RAIDS",c:"#60b8ff"},{v:`🔥${hero.streak}`,l:"STREAK",c:"#ff9944"},{v:mastN,l:"MAÎTRISÉS",c:"#4dffc3"},{v:`${todayH}h${String(todayM).padStart(2,"0")}`,l:"TRAVAIL AUJOURD'HUI",c:"#ff6b8a"},{v:`${totalH}h${String(totalM).padStart(2,"0")}`,l:"TRAVAIL TOTAL",c:"#c084fc"}].map(s=>(
+                  <div key={s.l} style={{background:CARD,border:`1px solid ${s.c}22`,borderRadius:"12px",padding:"14px",textAlign:"center"}}>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"1.4rem",fontWeight:900,color:s.c,lineHeight:1,marginBottom:"5px",textShadow:`0 0 12px ${s.c}44`}}>{s.v}</div>
+                    <div style={{fontSize:".54rem",color:TEXT2,letterSpacing:".10em",fontFamily:"'Orbitron',sans-serif"}}>{s.l}</div>
+                  </div>
+                ));
+              })()}
+            </div>
+
+            {/* Work Log — historique des 14 derniers jours */}
+            {(()=>{
+              const wl=hero.workLog||{};
+              const days=[];
+              for(let i=13;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);days.push(d.toISOString().split("T")[0]);}
+              const maxMin=Math.max(...days.map(d=>wl[d]||0),1);
+              const totalWeek=days.slice(7).reduce((a,d)=>a+(wl[d]||0),0);
+              const totalWeekH=Math.floor(totalWeek/60),totalWeekM=totalWeek%60;
+              return(
+                <div style={{background:CARD,border:`1px solid #c084fc33`,borderRadius:"13px",padding:"15px",marginBottom:"12px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"14px",flexWrap:"wrap",gap:"6px"}}>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2,letterSpacing:".18em"}}>📊 HISTORIQUE TRAVAIL (14J)</div>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:"#c084fc"}}>7 DERNIERS JOURS : {totalWeekH}h{String(totalWeekM).padStart(2,"0")}</div>
+                  </div>
+                  <div style={{display:"flex",gap:"4px",alignItems:"flex-end",height:"80px"}}>
+                    {days.map((d,i)=>{
+                      const min=wl[d]||0;
+                      const h=min>0?`${Math.floor(min/60)}h${String(min%60).padStart(2,"0")}`:"0";
+                      const barH=Math.max((min/maxMin)*68,min>0?6:2);
+                      const isToday=d===new Date().toISOString().split("T")[0];
+                      const isThisWeek=i>=7;
+                      const col=isToday?GOLD:isThisWeek?"#c084fc":"#c084fc55";
+                      const dt=new Date(d);const lbl=["D","L","M","M","J","V","S"][dt.getDay()];
+                      return(
+                        <div key={d} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"3px"}}>
+                          {min>0&&<div style={{fontSize:".38rem",color:col,fontFamily:"'Orbitron',sans-serif",fontWeight:700,letterSpacing:0}}>{h}</div>}
+                          <div style={{width:"100%",height:`${barH}px`,background:min>0?col:`${col}44`,borderRadius:"3px 3px 1px 1px",transition:"height .4s",boxShadow:min>0&&isToday?`0 0 8px ${GOLD}66`:min>0?`0 0 4px #c084fc44`:"none"}}/>
+                          <div style={{fontSize:".4rem",color:isToday?GOLD:TEXT2,fontFamily:"'Orbitron',sans-serif",fontWeight:isToday?700:400}}>{lbl}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {(()=>{
+                    const allVals=Object.values(wl);
+                    if(allVals.length===0)return null;
+                    const total=allVals.reduce((a,b)=>a+b,0);
+                    const best=Math.max(...allVals);
+                    const streak=Object.keys(wl).sort().reverse().reduce((s,d,i,arr)=>{if(i===0||(new Date(arr[i-1])-new Date(d))/86400000===1)return s+1;return s;},0);
+                    const avgMin=Math.round(total/allVals.length);
+                    return(
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px",marginTop:"12px"}}>
+                        {[{v:`${Math.floor(best/60)}h${String(best%60).padStart(2,"0")}`,l:"RECORD JOUR",c:"#ffd700"},{v:`${Math.floor(avgMin/60)}h${String(avgMin%60).padStart(2,"0")}`,l:"MOYENNE",c:"#60b8ff"},{v:`${streak}j`,l:"STREAK TRAVAIL",c:"#4dffc3"}].map(s=>(
+                          <div key={s.l} style={{background:CARD2,border:`1px solid ${s.c}22`,borderRadius:"9px",padding:"9px 5px",textAlign:"center"}}>
+                            <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".9rem",fontWeight:900,color:s.c,lineHeight:1}}>{s.v}</div>
+                            <div style={{fontSize:".44rem",color:TEXT2,letterSpacing:".07em",fontFamily:"'Orbitron',sans-serif",marginTop:"3px"}}>{s.l}</div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              );
+            })()}
+
+            <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"13px",padding:"13px",marginBottom:"12px"}}>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2,letterSpacing:".18em",marginBottom:"13px"}}>PROGRESSION MATIÈRES</div>
+              {Object.entries(chaps).map(([s,cs])=>{
+                const dg=DUNGEONS[s],sv=cs.filter(c=>c.s>=1).length,sm=cs.filter(c=>c.s===2).length,pct=Math.round((sv/cs.length)*100);
+                return(
+                  <div key={s} style={{marginBottom:"12px"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:"6px"}}><span style={{fontSize:".88rem"}}>{dg.boss.icon}</span><span style={{fontSize:".84rem",color:TEXT,fontWeight:600}}>{s}</span></div>
+                      <div style={{display:"flex",gap:"9px"}}><span style={{fontSize:".58rem",color:TEXT2}}>👁️{sv}/{cs.length}</span><span style={{fontSize:".58rem",color:dg.color}}>⭐{sm}</span></div>
+                    </div>
+                    <div style={{height:"6px",background:CARD2,borderRadius:"3px",overflow:"hidden",border:`1px solid ${BORDER}`}}>
+                      <div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${dg.color}66,${dg.color})`,borderRadius:"3px",transition:"width .5s",boxShadow:`0 0 6px ${dg.color}33`}}/>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {/* Logout in hero page */}
+            {(user||offline)&&(
+              <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"13px",padding:"13px"}}>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:TEXT2,letterSpacing:".18em",marginBottom:"11px"}}>COMPTE</div>
+                {user&&<div style={{marginBottom:"10px",fontSize:".84rem",color:TEXT2}}>Connecté : <span style={{color:TEXT}}>{user.email}</span></div>}
+                {offline&&<div style={{marginBottom:"10px",padding:"8px 10px",background:"rgba(255,179,71,.1)",border:"1px solid #ffb34733",borderRadius:"8px",fontSize:".8rem",color:"#ffb347"}}>Mode hors ligne — données locales uniquement</div>}
+                <button className="btn" onClick={handleLogout} style={{width:"100%",padding:"11px",background:"transparent",border:"1px solid #ff6b8a44",borderRadius:"9px",color:"#ff6b8a",fontFamily:"'Orbitron',sans-serif",fontSize:".68rem",fontWeight:700,cursor:"pointer"}}>SE DÉCONNECTER</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* GRIMOIRE */}
+        {scr==="grimoire"&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            <div style={{background:CARD,border:`1px solid ${GOLD}33`,borderRadius:"13px",padding:"15px",marginBottom:"13px"}}>
+              <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".6rem",color:`${GOLD}88`,letterSpacing:".18em",marginBottom:"10px"}}>📔 NOUVELLE ENTRÉE — +15 XP · +7 🪙</div>
+              <textarea value={jTxt} onChange={e=>setJTxt(e.target.value)} rows={5} placeholder={"Ce que j'ai appris...\nCe qui m'a bloqué...\nCe dont je suis fier..."} style={{width:"100%",background:CARD2,border:`1px solid ${BORDER}`,borderRadius:"9px",padding:"11px 12px",color:TEXT,fontSize:".92rem",outline:"none",resize:"vertical",lineHeight:1.75}}/>
+              <button className="btn" onClick={addJ} style={{marginTop:"10px",padding:"10px 22px",background:`linear-gradient(145deg,${CARD2},${CARD})`,border:`1px solid ${GOLD}44`,borderRadius:"9px",color:GOLD,fontFamily:"'Orbitron',sans-serif",fontSize:".66rem",fontWeight:700,cursor:"pointer",letterSpacing:".1em"}}>INSCRIRE DANS LE GRIMOIRE</button>
+            </div>
+            {journal.length===0&&<div style={{textAlign:"center",padding:"40px 20px",color:TEXT2,fontStyle:"italic",fontFamily:"'Exo 2',sans-serif"}}>Ton grimoire est vide...<br/><span style={{fontSize:".8rem",opacity:.5}}>Deux lignes suffisent.</span></div>}
+            {journal.map(e=>(
+              <div key={e.id} style={{background:CARD,border:`1px solid ${GOLD}18`,borderRadius:"11px",padding:"15px",marginBottom:"8px",position:"relative",overflow:"hidden"}}>
+                <div style={{position:"absolute",top:0,left:0,right:0,height:"1px",background:`linear-gradient(90deg,transparent,${GOLD}33,transparent)`}}/>
+                <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".58rem",color:`${GOLD}66`,letterSpacing:".12em",marginBottom:"9px",textTransform:"uppercase"}}>✦ {e.date}</div>
+                <p style={{fontSize:".95rem",color:TEXT2,lineHeight:1.8,fontStyle:"italic",fontFamily:"'Exo 2',sans-serif",fontWeight:300}}>{e.text}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* BOTTOM NAV */}
+      <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:100,background:`rgba(15,22,41,.98)`,backdropFilter:"blur(24px)",borderTop:`1px solid ${BORDER}`}}>
+        <div style={{maxWidth:"520px",margin:"0 auto",display:"flex",padding:"5px 0 max(9px,env(safe-area-inset-bottom))"}}>
+          {[{id:"hub",icon:"🏠",l:"HUB"},{id:"avatar",icon:"👤",l:"AVATAR"},{id:"planning",icon:"📅",l:"PLANNING"},{id:"clan",icon:"⚔️",l:"CLAN"},{id:"shop",icon:"🛒",l:"BOUTIQUE"},{id:"world",icon:"🗺️",l:"MONDE"},{id:"hero",icon:"🏆",l:"HÉROS"},{id:"grimoire",icon:"📔",l:"GRIMOIRE"}].map(n=>(
+            <button key={n.id} className="nb" onClick={()=>setScr(n.id)} style={{flex:1,padding:"6px 1px",border:"none",background:"transparent",borderTop:`2px solid ${scr===n.id?GOLD:"transparent"}`,color:scr===n.id?GOLD:TEXT2,fontFamily:"'Orbitron',sans-serif",fontSize:".38rem",fontWeight:700,letterSpacing:".04em",cursor:"pointer",transition:"all .15s",position:"relative"}}>
+              <div style={{fontSize:".9rem",marginBottom:"2px"}}>{n.icon}</div>{n.l}
+              {n.id==="clan"&&clan&&<div style={{position:"absolute",top:2,right:"50%",transform:"translateX(8px)",width:"6px",height:"6px",borderRadius:"50%",background:GOLD}}/>}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// APP ROOT — gère l'auth
+// ══════════════════════════════════════════════════════════════════
+function App(){
+  const [user,   setUser]   = useState(null);
+  const [checking,setCheck] = useState(true);
+  const [offline,setOffline]= useState(false);
+
+  useEffect(()=>{
+    if(!IS_CONFIGURED||!sb){setCheck(false);return;}
+    sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setCheck(false);});
+    const {data:{subscription}}=sb.auth.onAuthStateChange((_,session)=>setUser(session?.user??null));
+    return()=>subscription.unsubscribe();
+  },[]);
+
+  // Loading
+  if(checking) return(
+    <div style={{minHeight:"100vh",background:"#0f1629",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"18px"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@900&display=swap');*{box-sizing:border-box;margin:0;padding:0}@keyframes spin{to{transform:rotate(360deg)}}@keyframes glow{0%,100%{text-shadow:0 0 14px #ffd70055}50%{text-shadow:0 0 36px #ffd700}}`}</style>
+      <div style={{width:"48px",height:"48px",border:"3px solid #2d3d6a",borderTopColor:"#ffd700",borderRadius:"50%",animation:"spin .7s linear infinite"}}/>
+      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:".7rem",color:"#8090b8",letterSpacing:".25em"}}>CONNEXION...</div>
+    </div>
+  );
+
+  // Supabase not configured → show setup guide (unless offline chosen)
+  if(!IS_CONFIGURED&&!offline) return <SetupGuide onOffline={()=>setOffline(true)}/>;
+
+  // Configured but no user yet and not offline → show auth
+  if(IS_CONFIGURED&&!user&&!offline) return <AuthScreen onOffline={()=>setOffline(true)}/>;
+
+  // Play!
+  return <Game user={user} offline={offline||!IS_CONFIGURED}/>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
