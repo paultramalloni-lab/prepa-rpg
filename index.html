@@ -25,9 +25,8 @@ const {useState,useEffect,useRef,useCallback} = React;
 // 2. Crée un nouveau projet
 // 3. Dans Settings → API, copie "Project URL" et "anon public" key
 // 4. Colle-les ici :
-const SUPABASE_URL      = "https://eqfxwvtcotatwifpvxlm.supabase.co";          // ex: https://abcdef.supabase.co
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVxZnh3dnRjb3RhdHdpZnB2eGxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1ODM2NjYsImV4cCI6MjA4OTE1OTY2Nn0.pfArBpsSBXpFfDItl2NdJxB3UMRytn2T5sDrtQY5tA8";      // ey...longue clé...
-
+const SUPABASE_URL      = "https://nfpdqkfpjcbmzoqtjjqw.supabase.co";          // ex: https://abcdef.supabase.co
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5mcGRxa2ZwamNibXpvcXRqanF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1Mzg1MjUsImV4cCI6MjA5MDExNDUyNX0.vHL1n_BjwOYnDvNHaErCDRILDDW_t0uuJ0YjcRcxrCg"
 // 5. Dans Supabase → SQL Editor, exécute ce SQL :
 /*
 create table if not exists game_saves (
